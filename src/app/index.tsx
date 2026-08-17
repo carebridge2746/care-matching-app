@@ -1,98 +1,58 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { StyleSheet, View } from 'react-native';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { AppButton, AppText, Card, Screen } from '@/components/common';
+import { RoleLabels, type UserRole } from '@/types';
+import { Spacing } from '@/theme';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+const RoleDescriptions: Record<UserRole, string> = {
+  guardian: '간병 요청을 작성하고 추천받은 간병인과 연결됩니다.',
+  caregiver: '역량과 가능 시간을 등록하고 요청을 수락합니다.',
+  admin: '사용자, 요청, 매칭 현황을 관리합니다.',
+};
+
+const Roles: UserRole[] = ['guardian', 'caregiver', 'admin'];
+
+export default function LandingScreen() {
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+    <Screen
+      scroll
+      footer={
+        <>
+          <AppButton title="시작하기" disabled />
+          <AppText variant="caption" tone="tertiary" center>
+            로그인 화면은 다음 단계에서 연결됩니다.
+          </AppText>
+        </>
+      }>
+      <View style={styles.hero}>
+        <AppText variant="display">AI 간병 매칭</AppText>
+        <AppText variant="body" tone="secondary">
+          필요한 간병 내용을 평소 말하듯 적으면, AI가 조건을 정리하고 가장 적합한 간병인을
+          찾아드립니다.
+        </AppText>
+      </View>
 
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+      <View style={styles.roleList}>
+        <AppText variant="heading">이용 대상</AppText>
+        {Roles.map((role) => (
+          <Card key={role}>
+            <AppText variant="subheading">{RoleLabels[role]}</AppText>
+            <AppText variant="caption" tone="secondary">
+              {RoleDescriptions[role]}
+            </AppText>
+          </Card>
+        ))}
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
+  hero: {
+    paddingTop: Spacing.xxl,
+    gap: Spacing.md,
   },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  roleList: {
+    gap: Spacing.md,
   },
 });

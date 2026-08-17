@@ -1,56 +1,85 @@
-# Welcome to your Expo app 👋
+# AI 간병 매칭 플랫폼 (MVP)
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+보호자가 자연어로 간병 요청을 작성하면, AI가 요청을 구조화된 조건으로 변환하고
+점수 기반 매칭 알고리즘이 적합한 간병인을 추천하는 모바일 앱 MVP입니다.
 
-## Get started
+대학 프로젝트 및 프로토타입 시연용이며, 상용 서비스가 아닙니다.
 
-1. Install dependencies
+## 핵심 흐름
 
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+보호자: 간병 요청(자연어) → AI 분석/구조화 → 점수 기반 매칭 → 간병인 추천 → 매칭 → 간병 → 상호 평가
+간병인: 프로필/역량/자격/가능 시간 등록 → 요청 수락 → 간병 → 평가 확인
+관리자: 사용자·요청·매칭·노쇼·교육·평가 관리
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+AI는 사람을 직접 고르지 않습니다. AI는 **자연어를 조건으로 변환**하는 역할만 하고,
+간병인 선정은 **결정론적인 점수 계산**으로 이뤄집니다.
 
-### Other setup steps
+## 기술 스택
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+| 영역 | 사용 기술 |
+| --- | --- |
+| 앱 | Expo SDK 57, React Native 0.86, TypeScript (strict) |
+| 라우팅 | expo-router (파일 기반, 라우트 루트는 `src/app`) |
+| 상태 관리 | Zustand |
+| 백엔드 | Supabase (PostgreSQL, Auth, Edge Functions) |
+| AI | LLM API — Supabase Edge Function 경유 호출 |
 
-## Learn more
+## 실행 방법
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+npm install
+cp .env.example .env    # 값 입력
+npx expo start
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## 환경 변수
 
-## Join the community
+`.env.example`을 `.env`로 복사해서 사용합니다.
 
-Join our community of developers creating universal apps.
+| 키 | 설명 |
+| --- | --- |
+| `EXPO_PUBLIC_LLM_MODE` | `mock`이면 실제 LLM을 호출하지 않고 테스트 결과를 반환, `live`면 Edge Function 경유 호출 |
+| `EXPO_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (공개 키, 접근 제어는 RLS로 수행) |
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+LLM API Key와 Supabase `service_role` key는 클라이언트에 두지 않고
+Supabase Edge Function의 secret으로만 설정합니다.
+
+## 폴더 구조
+
+```
+src/
+├── app/          # expo-router 라우트 (화면)
+├── components/
+│   └── common/   # 화면 전반에서 재사용하는 UI (AppText, AppButton, Card, Screen, StatusBadge)
+├── store/        # Zustand 상태 저장소
+├── theme/        # 디자인 토큰 (색상, 타이포, 여백, 상태 색상)
+└── types/        # 도메인 타입
+```
+
+## 디자인 원칙
+
+- 고령자와 보호자가 함께 쓰므로 본문 글자는 18px 기준, 보조 문구도 15px 미만을 쓰지 않습니다.
+- 주요 버튼의 터치 높이는 최소 56px입니다.
+- 상태는 색상만으로 구분하지 않고 항상 텍스트 라벨을 함께 표시합니다 (`StatusBadge`).
+- 색상·글자 크기·여백은 `src/theme/tokens.ts`에서만 정의하고, 화면에서 직접 값을 쓰지 않습니다.
+- MVP는 라이트 테마만 지원합니다 (`app.json`의 `userInterfaceStyle: "light"`).
+
+## 개발 진행 상황
+
+| Phase | 내용 | 상태 |
+| --- | --- | --- |
+| 1 | 프로젝트 설정 · 디자인 토큰 · 공통 컴포넌트 · Zustand | 완료 |
+| 2 | 로그인/회원가입, 사용자 유형 분기 | 예정 |
+| 3 | 보호자 환자 정보 · 간병 요청 작성 | 예정 |
+| 4 | AI 자연어 분석 (Mock) · 구조화 결과 화면 | 예정 |
+| 5 | 간병인 프로필 · 역량 · 자격 · 가능 시간 | 예정 |
+| 6 | 매칭 알고리즘 · 추천 간병인 | 예정 |
+| 7 | 매칭 수락/거절 · 간병 진행 | 예정 |
+| 8 | 후기/평가 · 신뢰도 반영 | 예정 |
+| 9 | 교육 · 퀴즈 · 수료 | 예정 |
+| 10 | 노쇼 · 대체 간병인 추천 | 예정 |
+| 11 | 관리자 기능 | 예정 |
+| 12 | 전체 테스트 및 UI 개선 | 예정 |
