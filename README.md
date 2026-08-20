@@ -43,7 +43,8 @@ npx expo start
 | `EXPO_PUBLIC_AUTH_MODE` | `mock`이면 로컬 AsyncStorage 기반 Mock 인증, `supabase`면 Supabase Auth 사용 |
 | `EXPO_PUBLIC_LLM_MODE` | `mock`이면 실제 LLM을 호출하지 않고 테스트 결과를 반환, `live`면 Edge Function 경유 호출 |
 | `EXPO_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
-| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (공개 키, 접근 제어는 RLS로 수행) |
+| `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase 공개 키 (`sb_publishable_...`). 접근 제어는 RLS로 수행 |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | 예전 프로젝트용 anon key. publishable key가 있으면 그쪽이 우선 |
 
 LLM API Key와 Supabase `service_role` key는 클라이언트에 두지 않고
 Supabase Edge Function의 secret으로만 설정합니다.
@@ -52,7 +53,7 @@ Supabase Edge Function의 secret으로만 설정합니다.
 
 ```
 src/
-├── api/          # 백엔드 어댑터 (auth.ts = 인증 진입점, auth.mock.ts = 로컬 Mock 구현)
+├── api/          # 백엔드 어댑터 (auth.ts = 진입점, auth.mock.ts / auth.supabase.ts = 구현)
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
 │   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
@@ -66,6 +67,8 @@ src/
 ├── theme/        # 디자인 토큰 (색상, 타이포, 여백, 상태 색상)
 └── types/        # 도메인 타입
 ```
+
+`supabase/schema.sql`에 데이터베이스 스키마(테이블·RLS 정책·트리거)를 둡니다.
 
 ## 디자인 원칙
 
@@ -107,15 +110,39 @@ Supabase 프로젝트가 준비되기 전까지는 `EXPO_PUBLIC_AUTH_MODE=mock` 
 | `admin@care.test` | 관리자 |
 
 화면과 상태 저장소는 `src/api/auth.ts`의 `authApi`만 호출합니다.
-Supabase Auth 연결은 같은 파일의 `supabaseAuthAdapter` 본문을 채우고
-`EXPO_PUBLIC_AUTH_MODE=supabase` 로 바꾸면 되며, 화면 코드는 수정하지 않습니다.
+어떤 구현이 연결되는지는 `EXPO_PUBLIC_AUTH_MODE` 하나로 정해지므로,
+Mock ↔ Supabase 전환에 화면 코드는 바뀌지 않습니다.
+
+### Supabase 인증으로 전환하기
+
+1. [supabase.com](https://supabase.com)에서 프로젝트를 만듭니다.
+2. 대시보드의 **SQL Editor**에서 `supabase/schema.sql`을 실행합니다.
+   `profiles` 테이블, RLS 정책, 회원가입 시 프로필을 만드는 트리거가 함께 생성됩니다.
+3. **Project Settings → Data API / API Keys**에서 URL과 공개 키를 복사해 `.env`에 넣습니다.
+4. `EXPO_PUBLIC_AUTH_MODE`를 `supabase`로 바꾸고 개발 서버를 다시 시작합니다.
+   환경 변수는 번들 시점에 값이 박히므로 재시작 없이는 반영되지 않습니다.
+
+MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 `Confirm email`을 꺼 두는 편이
+편합니다. 켜 두면 가입 직후 로그인 상태가 되지 않고 "가입 확인 메일을 보냈습니다" 안내가 나옵니다.
+
+계정 정보가 나뉘어 저장되는 구조입니다.
+
+| 저장 위치 | 내용 |
+| --- | --- |
+| `auth.users` (Supabase 관리) | 이메일, 비밀번호 해시, 세션 |
+| `public.profiles` | 이름, 이용 유형(role), 연락처 |
+
+이용 유형은 **반드시 `profiles`에서만** 읽습니다. `auth.users`의 `user_metadata`는 클라이언트가
+값을 넣을 수 있어서, 그대로 믿으면 누구나 스스로를 관리자라고 주장할 수 있기 때문입니다.
+같은 이유로 프로필을 만드는 트리거도 가입 요청에 담긴 유형을 그대로 쓰지 않고
+보호자/간병인 중 하나로만 강제합니다. 관리자 지정은 운영자가 SQL로 직접 합니다.
 
 ## 개발 진행 상황
 
 | Phase | 내용 | 상태 |
 | --- | --- | --- |
 | 1 | 프로젝트 설정 · 디자인 토큰 · 공통 컴포넌트 · Zustand | 완료 |
-| 2 | 로그인/회원가입, 사용자 유형 분기 (인증은 Mock 어댑터) | 완료 |
+| 2 | 로그인/회원가입, 사용자 유형 분기 (Mock · Supabase 인증 어댑터) | 완료 |
 | 3 | 보호자 환자 정보 · 간병 요청 작성 | 예정 |
 | 4 | AI 자연어 분석 (Mock) · 구조화 결과 화면 | 예정 |
 | 5 | 간병인 프로필 · 역량 · 자격 · 가능 시간 | 예정 |

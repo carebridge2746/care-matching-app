@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { DemoAccounts, DemoPassword, isMockAuth } from '@/api/auth';
+import { authMode, DemoAccounts, DemoPassword, hasSupabaseEnv, isMockAuth } from '@/api/auth';
 import { AppButton, AppText, Card, Screen, TextField } from '@/components/common';
 import { validateEmail, validatePassword } from '@/lib/validation';
 import { useAuthStore } from '@/store/use-auth-store';
@@ -118,6 +118,18 @@ export default function SignInScreen() {
         <AppText variant="body" tone="danger">
           {errorMessage}
         </AppText>
+      ) : null}
+
+      {authMode === 'supabase' && !hasSupabaseEnv ? (
+        <Card>
+          <AppText variant="label" tone="danger">
+            Supabase 설정이 필요합니다
+          </AppText>
+          <AppText variant="caption" tone="secondary">
+            .env 파일에 EXPO_PUBLIC_SUPABASE_URL 과 EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY 를 채운 뒤 개발
+            서버를 다시 시작해 주세요. 설정 전에는 EXPO_PUBLIC_AUTH_MODE=mock 으로 두면 됩니다.
+          </AppText>
+        </Card>
       ) : null}
 
       {isMockAuth ? (

@@ -3,8 +3,9 @@ import type { AppUser, UserRole } from '@/types';
 /**
  * 인증 어댑터의 계약.
  *
- * 화면과 저장소는 이 타입에만 의존한다. 지금은 Mock 구현(auth.mock.ts)이 연결되어 있고,
- * Supabase 프로젝트가 준비되면 같은 형태의 구현으로 갈아끼우기만 하면 된다.
+ * 화면과 저장소는 이 타입에만 의존한다.
+ * 구현은 두 가지다 — 로컬 Mock(auth.mock.ts)과 Supabase Auth(auth.supabase.ts).
+ * 어느 쪽이 연결되는지는 EXPO_PUBLIC_AUTH_MODE 하나로 결정된다.
  */
 
 export type SignInInput = {
@@ -26,13 +27,34 @@ export type AuthAdapter = {
   signIn: (input: SignInInput) => Promise<AppUser>;
   signUp: (input: SignUpInput) => Promise<AppUser>;
   signOut: () => Promise<void>;
+  /**
+   * 앱이 요청하지 않았는데 세션이 바뀌었을 때 알린다.
+   * (토큰 갱신 실패, 다른 기기에서 로그아웃, 계정 삭제 등)
+   * 구독을 해제하는 함수를 돌려준다. 지원하지 않는 구현은 생략한다.
+   */
+  subscribe?: (onChange: (user: AppUser | null) => void) => () => void;
 };
 
 export type AuthErrorCode =
+  /** 이메일 또는 비밀번호가 틀림 */
   | 'invalid_credentials'
+  /** 이미 가입된 이메일 */
   | 'email_already_registered'
+  /** 메일 인증을 마쳐야 로그인할 수 있음 */
+  | 'email_not_confirmed'
+  /** 가입은 됐지만 메일 인증이 남아 아직 로그인 상태가 아님 */
+  | 'email_confirmation_required'
+  /** 서버가 거부한 입력값 (형식 오류, 너무 쉬운 비밀번호 등) */
   | 'invalid_input'
-  | 'not_configured';
+  /** 로그인은 됐지만 profiles 행을 읽지 못함 */
+  | 'profile_unavailable'
+  /** 요청이 너무 잦아 서버가 제한함 */
+  | 'rate_limited'
+  /** 서버에 연결하지 못함 */
+  | 'network_error'
+  /** 환경 변수 등 설정이 끝나지 않음 */
+  | 'not_configured'
+  | 'unknown';
 
 /**
  * 어댑터가 던지는 오류.

@@ -21,12 +21,15 @@ type AuthState = {
   clearError: () => void;
 };
 
+/** 세션 변화 구독 해제 함수. 앱이 살아 있는 동안 유지되므로 저장소 바깥에 둔다 */
+let unsubscribeFromAuthChanges: (() => void) | null = null;
+
 /**
  * 인증 상태 저장소.
  *
  * 실제 인증 동작은 전부 `authApi`(src/api/auth.ts)에 위임하고,
  * 이 저장소는 화면이 필요로 하는 상태(사용자, 로딩, 오류)만 관리한다.
- * 따라서 Mock → Supabase 전환 시 이 파일은 바뀌지 않는다.
+ * 따라서 Mock ↔ Supabase 전환에도 이 파일은 바뀌지 않는다.
  */
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -44,9 +47,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = await authApi.getCurrentUser();
       set({ user });
     } catch {
+      // 세션 복원 실패는 비로그인으로 취급한다. 오류 문구는 로그인 시도할 때 보여준다.
       set({ user: null });
     } finally {
       set({ isBootstrapping: false });
+    }
+
+    // 토큰 갱신 실패처럼 앱이 요청하지 않은 로그아웃을 화면에 반영한다.
+    // 설정이 끝나지 않아 구독 자체가 실패할 수 있는데, 그 때문에 앱이 죽으면 안 된다.
+    // 무엇이 잘못됐는지는 로그인을 시도할 때 화면에 안내한다.
+    try {
+      unsubscribeFromAuthChanges ??= authApi.subscribe?.((user) => set({ user })) ?? null;
+    } catch {
+      unsubscribeFromAuthChanges = null;
     }
   },
 
