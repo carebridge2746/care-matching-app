@@ -40,6 +40,7 @@ npx expo start
 
 | 키 | 설명 |
 | --- | --- |
+| `EXPO_PUBLIC_AUTH_MODE` | `mock`이면 로컬 AsyncStorage 기반 Mock 인증, `supabase`면 Supabase Auth 사용 |
 | `EXPO_PUBLIC_LLM_MODE` | `mock`이면 실제 LLM을 호출하지 않고 테스트 결과를 반환, `live`면 Edge Function 경유 호출 |
 | `EXPO_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (공개 키, 접근 제어는 RLS로 수행) |
@@ -51,9 +52,16 @@ Supabase Edge Function의 secret으로만 설정합니다.
 
 ```
 src/
+├── api/          # 백엔드 어댑터 (auth.ts = 인증 진입점, auth.mock.ts = 로컬 Mock 구현)
 ├── app/          # expo-router 라우트 (화면)
+│   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
+│   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
+│   └── (app)/        # 로그인 전용 — guardian / caregiver / admin
 ├── components/
-│   └── common/   # 화면 전반에서 재사용하는 UI (AppText, AppButton, Card, Screen, StatusBadge)
+│   ├── auth/     # 회원가입 유형 선택 카드
+│   ├── common/   # 화면 전반에서 재사용하는 UI (AppText, AppButton, Card, Screen, TextField 등)
+│   └── home/     # 유형별 홈 화면의 공통 골격
+├── lib/          # 라우트 매핑, 입력 검증, 저장소 헬퍼, 공통 헤더 옵션
 ├── store/        # Zustand 상태 저장소
 ├── theme/        # 디자인 토큰 (색상, 타이포, 여백, 상태 색상)
 └── types/        # 도메인 타입
@@ -67,12 +75,47 @@ src/
 - 색상·글자 크기·여백은 `src/theme/tokens.ts`에서만 정의하고, 화면에서 직접 값을 쓰지 않습니다.
 - MVP는 라이트 테마만 지원합니다 (`app.json`의 `userInterfaceStyle: "light"`).
 
+## 인증과 화면 분기
+
+로그인 여부와 사용자 유형에 따라 접근할 수 있는 화면이 나뉩니다.
+
+| 경로 | 접근 조건 | 설명 |
+| --- | --- | --- |
+| `/` | 누구나 | 서비스 소개. 로그인 상태면 유형별 홈으로 자동 이동 |
+| `/sign-in`, `/sign-up` | 비로그인 | 로그인 / 회원가입 |
+| `/guardian` | 보호자 | 보호자 홈 |
+| `/caregiver` | 간병인 | 간병인 홈 |
+| `/admin` | 관리자 | 관리자 홈 |
+
+접근 제어는 `expo-router`의 `Stack.Protected` guard로만 처리합니다.
+화면에서 `router.replace`로 이동을 강제하지 않으므로, 웹 주소를 직접 입력하거나
+딥링크로 들어와도 같은 규칙이 적용됩니다. 유형 분기는 `src/lib/routes.ts` 한 곳에서만 정의합니다.
+
+관리자 계정은 회원가입 화면에서 만들 수 없고 운영자가 직접 발급합니다.
+
+### Mock 인증 (Supabase 연결 전)
+
+Supabase 프로젝트가 준비되기 전까지는 `EXPO_PUBLIC_AUTH_MODE=mock` 으로 두고
+로컬 저장소(AsyncStorage) 기반 Mock 인증을 사용합니다. 앱을 껐다 켜도 로그인 상태가 유지됩니다.
+
+첫 실행 시 아래 시연용 계정이 자동으로 만들어집니다. 비밀번호는 모두 `care1234` 입니다.
+
+| 이메일 | 유형 |
+| --- | --- |
+| `guardian@care.test` | 보호자 |
+| `caregiver@care.test` | 간병인 |
+| `admin@care.test` | 관리자 |
+
+화면과 상태 저장소는 `src/api/auth.ts`의 `authApi`만 호출합니다.
+Supabase Auth 연결은 같은 파일의 `supabaseAuthAdapter` 본문을 채우고
+`EXPO_PUBLIC_AUTH_MODE=supabase` 로 바꾸면 되며, 화면 코드는 수정하지 않습니다.
+
 ## 개발 진행 상황
 
 | Phase | 내용 | 상태 |
 | --- | --- | --- |
 | 1 | 프로젝트 설정 · 디자인 토큰 · 공통 컴포넌트 · Zustand | 완료 |
-| 2 | 로그인/회원가입, 사용자 유형 분기 | 예정 |
+| 2 | 로그인/회원가입, 사용자 유형 분기 (인증은 Mock 어댑터) | 완료 |
 | 3 | 보호자 환자 정보 · 간병 요청 작성 | 예정 |
 | 4 | AI 자연어 분석 (Mock) · 구조화 결과 화면 | 예정 |
 | 5 | 간병인 프로필 · 역량 · 자격 · 가능 시간 | 예정 |

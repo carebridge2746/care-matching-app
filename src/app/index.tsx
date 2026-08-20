@@ -1,8 +1,11 @@
+import { Redirect, useRouter } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { AppButton, AppText, Card, Screen } from '@/components/common';
-import { RoleLabels, type UserRole } from '@/types';
+import { homeRouteForRole } from '@/lib/routes';
+import { useAuthStore } from '@/store/use-auth-store';
 import { Spacing } from '@/theme';
+import { RoleLabels, type UserRole } from '@/types';
 
 const RoleDescriptions: Record<UserRole, string> = {
   guardian: '간병 요청을 작성하고 추천받은 간병인과 연결됩니다.',
@@ -12,16 +15,31 @@ const RoleDescriptions: Record<UserRole, string> = {
 
 const Roles: UserRole[] = ['guardian', 'caregiver', 'admin'];
 
+/**
+ * 앱 진입 화면.
+ *
+ * 로그인한 사용자는 이곳에 머무르지 않고 유형별 첫 화면으로 보낸다.
+ * 사용자 유형 분기는 이 한 곳에서만 일어난다.
+ */
 export default function LandingScreen() {
+  const router = useRouter();
+  const user = useAuthStore((state) => state.user);
+
+  if (user) {
+    return <Redirect href={homeRouteForRole(user.role)} />;
+  }
+
   return (
     <Screen
       scroll
       footer={
         <>
-          <AppButton title="시작하기" disabled />
-          <AppText variant="caption" tone="tertiary" center>
-            로그인 화면은 다음 단계에서 연결됩니다.
-          </AppText>
+          <AppButton title="시작하기" onPress={() => router.push('/sign-in')} />
+          <AppButton
+            title="회원가입"
+            variant="outline"
+            onPress={() => router.push('/sign-up')}
+          />
         </>
       }>
       <View style={styles.hero}>

@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { ScrollView, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { Colors, Layout, Spacing } from '@/theme';
@@ -12,6 +20,8 @@ export type ScreenProps = {
   edges?: readonly Edge[];
   /** 하단에 고정 버튼을 둘 때 사용 */
   footer?: ReactNode;
+  /** 입력 폼이 있는 화면에서 키보드가 하단 버튼을 가리지 않게 한다 */
+  avoidKeyboard?: boolean;
   contentStyle?: StyleProp<ViewStyle>;
 };
 
@@ -24,6 +34,7 @@ export function Screen({
   scroll = false,
   edges = ['top', 'bottom'],
   footer,
+  avoidKeyboard = false,
   contentStyle,
 }: ScreenProps) {
   const content = scroll ? (
@@ -38,12 +49,24 @@ export function Screen({
     <View style={[styles.flex, styles.content, contentStyle]}>{children}</View>
   );
 
+  const column = (
+    <View style={styles.centerColumn}>
+      {content}
+      {footer ? <View style={styles.footer}>{footer}</View> : null}
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={edges}>
-      <View style={styles.centerColumn}>
-        {content}
-        {footer ? <View style={styles.footer}>{footer}</View> : null}
-      </View>
+      {avoidKeyboard ? (
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.select({ ios: 'padding', default: undefined })}>
+          {column}
+        </KeyboardAvoidingView>
+      ) : (
+        column
+      )}
     </SafeAreaView>
   );
 }
