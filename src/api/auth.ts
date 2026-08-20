@@ -1,5 +1,6 @@
 import { mockAuthAdapter } from '@/api/auth.mock';
 import { supabaseAuthAdapter } from '@/api/auth.supabase';
+import { backendMode, type BackendMode } from '@/api/mode';
 import type { AuthAdapter } from '@/api/auth.types';
 
 export {
@@ -27,10 +28,10 @@ export { hasSupabaseEnv } from '@/api/supabase-client';
  * 개발 서버를 다시 시작해야 반영된다.
  */
 
-export type AuthMode = 'mock' | 'supabase';
+export type AuthMode = BackendMode;
 
-export const authMode: AuthMode =
-  process.env.EXPO_PUBLIC_AUTH_MODE === 'supabase' ? 'supabase' : 'mock';
+/** 인증과 데이터 접근은 같은 스위치를 쓴다 (src/api/mode.ts) */
+export const authMode: AuthMode = backendMode;
 
 export const authApi: AuthAdapter = authMode === 'supabase' ? supabaseAuthAdapter : mockAuthAdapter;
 

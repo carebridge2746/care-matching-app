@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { StyleSheet, TextInput, View, type TextInputProps } from 'react-native';
+import {
+  StyleSheet,
+  TextInput,
+  View,
+  type StyleProp,
+  type TextInputProps,
+  type ViewStyle,
+} from 'react-native';
 
 import { AppText } from '@/components/common/app-text';
 import { Colors, FontFamily, Layout, Radius, Spacing, Typography } from '@/theme';
@@ -14,6 +21,8 @@ export type TextFieldProps = {
   /** 입력 규칙 안내 (예: 8자 이상). 오류가 있으면 오류 문구로 대체된다 */
   helperText?: string;
   secureTextEntry?: boolean;
+  /** 여러 줄 입력 (간병 요청 원문, 특이사항 등) */
+  multiline?: boolean;
   keyboardType?: TextInputProps['keyboardType'];
   autoCapitalize?: TextInputProps['autoCapitalize'];
   autoComplete?: TextInputProps['autoComplete'];
@@ -21,6 +30,8 @@ export type TextFieldProps = {
   returnKeyType?: TextInputProps['returnKeyType'];
   onSubmitEditing?: TextInputProps['onSubmitEditing'];
   editable?: boolean;
+  /** 가로로 나란히 놓을 때처럼 바깥 여백/너비를 조절해야 하는 경우 */
+  style?: StyleProp<ViewStyle>;
 };
 
 /**
@@ -37,6 +48,7 @@ export function TextField({
   error,
   helperText,
   secureTextEntry = false,
+  multiline = false,
   keyboardType,
   autoCapitalize = 'none',
   autoComplete,
@@ -44,12 +56,13 @@ export function TextField({
   returnKeyType,
   onSubmitEditing,
   editable = true,
+  style,
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
   const description = error ?? helperText;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, style]}>
       <AppText variant="label" tone="secondary">
         {label}
       </AppText>
@@ -69,9 +82,11 @@ export function TextField({
         returnKeyType={returnKeyType}
         onSubmitEditing={onSubmitEditing}
         editable={editable}
+        multiline={multiline}
         autoCorrect={false}
         style={[
           styles.input,
+          multiline && styles.inputMultiline,
           focused && styles.inputFocused,
           error ? styles.inputError : null,
           !editable && styles.inputDisabled,
@@ -102,6 +117,12 @@ const styles = StyleSheet.create({
     fontSize: Typography.body.fontSize,
     lineHeight: Typography.body.lineHeight,
     color: Colors.text.primary,
+  },
+  inputMultiline: {
+    minHeight: 140,
+    paddingTop: Spacing.md,
+    // 여러 줄일 때 안드로이드는 글자를 세로 가운데 정렬한다. 위에서부터 쓰게 맞춘다.
+    textAlignVertical: 'top',
   },
   inputFocused: {
     borderColor: Colors.brand.primary,
