@@ -22,7 +22,7 @@ import type { CaregiverProfile } from '@/types';
  */
 
 const ProfileColumns =
-  'id, gender, years_of_experience, certifications, skills, care_types, regions, introduction, created_at, updated_at';
+  'id, gender, years_of_experience, certifications, skills, care_types, regions, min_daily_wage, introduction, created_at, updated_at';
 
 type ProfileInsert = Database['public']['Tables']['caregiver_profiles']['Insert'];
 type AvailabilityInsert = Database['public']['Tables']['caregiver_availability']['Insert'];
@@ -39,6 +39,7 @@ function toProfile(
     skills: row.skills,
     careTypes: row.care_types,
     regions: row.regions,
+    ...(row.min_daily_wage !== null ? { minDailyWage: row.min_daily_wage } : {}),
     ...(row.introduction ? { introduction: row.introduction } : {}),
     availability: sortSlots(
       availability.map(({ weekday, slot }) => ({ weekday, slot }))
@@ -58,6 +59,7 @@ function toColumns(caregiverId: string, input: CaregiverProfileInput): ProfileIn
     skills: input.skills,
     care_types: input.careTypes,
     regions: input.regions.map((region) => region.trim()).filter(Boolean),
+    min_daily_wage: input.minDailyWage ?? null,
     introduction: input.introduction?.trim() || null,
   };
 }

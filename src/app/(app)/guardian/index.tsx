@@ -101,7 +101,9 @@ export default function GuardianHomeScreen() {
             const patient = patients.find((item) => item.id === request.patientId);
 
             return (
-              <Card key={request.id} onPress={() => router.push('/guardian/requests')}>
+              <Card
+                key={request.id}
+                onPress={() => router.push(`/guardian/requests/${request.id}`)}>
                 <View style={styles.cardHeader}>
                   <AppText variant="subheading">{patient?.name ?? '환자 정보 없음'}</AppText>
                   <StatusBadge tone={request.status} />

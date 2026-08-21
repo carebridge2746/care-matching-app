@@ -1,4 +1,5 @@
 import { ApiError } from '@/api/api-error';
+import { DemoCaregiverProfiles } from '@/api/caregiver.demo';
 import type { CaregiverAdapter, CaregiverProfileInput } from '@/api/caregiver.types';
 import { delay, loadCaregiverProfiles, saveCaregiverProfiles } from '@/api/mock-store';
 import { sortSlots } from '@/lib/availability';
@@ -24,18 +25,38 @@ function applyInput(
     skills: input.skills,
     careTypes: input.careTypes,
     regions: input.regions.map((region) => region.trim()).filter(Boolean),
+    ...(input.minDailyWage !== undefined ? { minDailyWage: input.minDailyWage } : {}),
     ...(input.introduction?.trim() ? { introduction: input.introduction.trim() } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
 
+/**
+ * 저장된 프로필. 시연용 프로필 중 아직 없는 것은 여기서 채워 넣는다.
+ * 시연 데이터가 늘어날 때마다 기기의 저장소를 지우지 않아도 되게 하려는 것이다.
+ */
+async function loadAll(): Promise<CaregiverProfile[]> {
+  const stored = await loadCaregiverProfiles();
+  const missing = DemoCaregiverProfiles.filter(
+    (demo) => !stored.some((item) => item.id === demo.id)
+  );
+
+  if (missing.length === 0) {
+    return stored;
+  }
+
+  const merged = [...stored, ...missing];
+  await saveCaregiverProfiles(merged);
+  return merged;
+}
+
 async function findProfile(caregiverId: string): Promise<CaregiverProfile | undefined> {
-  const all = await loadCaregiverProfiles();
+  const all = await loadAll();
   return all.find((profile) => profile.id === caregiverId);
 }
 
 async function upsert(profile: CaregiverProfile): Promise<void> {
-  const all = await loadCaregiverProfiles();
+  const all = await loadAll();
   const exists = all.some((item) => item.id === profile.id);
 
   await saveCaregiverProfiles(
@@ -85,3 +106,8 @@ export const mockCaregiverAdapter: CaregiverAdapter = {
     return updated;
   },
 };
+
+/** 매칭 어댑터가 후보를 훑을 때 쓴다. Mock 모드에는 데이터베이스가 없어 목록을 통째로 읽는다. */
+export async function readAllMockCaregiverProfiles(): Promise<CaregiverProfile[]> {
+  return loadAll();
+}

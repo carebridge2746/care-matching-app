@@ -582,3 +582,108 @@ create policy "간병인 본인 가능시간 삭제"
   using ((select auth.uid()) = caregiver_id);
 
 -- update 정책은 두지 않는다. 칸은 켜거나 끄는 것뿐이라 고칠 내용이 없다.
+
+-- ===========================================================================
+-- Phase 6 — 매칭과 추천
+-- ===========================================================================
+--
+-- 점수 계산은 여기에 두지 않는다. 앱의 src/lib/matching.ts 한 곳에서만 한다.
+-- 같은 규칙을 SQL에도 적으면 두 구현이 조금씩 어긋나기 시작하고,
+-- 그러면 보호자 화면의 점수와 간병인 화면의 점수가 달라진다.
+--
+-- 데이터베이스가 맡는 것은 "누구를 보여 줘도 되는가" 하나다.
+--   - 본인이 올린 요청에 대해서만 추천을 볼 수 있다
+--   - 아무리 점수가 높아도 될 수 없는 사람(맡지 않는 장소, 지정하지 않은 성별)은 빼고 준다
+--   - 이름은 매칭이 확정되기 전까지 가린다
+
+-- 16) 희망 일당 --------------------------------------------------------------
+--
+-- 요청의 budget_per_day 와 맞춰 보기 위한 값이다. 정하지 않으면 null(협의)이다.
+
+alter table public.caregiver_profiles
+  add column if not exists min_daily_wage integer;
+
+alter table public.caregiver_profiles
+  drop constraint if exists caregiver_profiles_min_daily_wage_valid;
+alter table public.caregiver_profiles
+  add constraint caregiver_profiles_min_daily_wage_valid check (
+    min_daily_wage is null or min_daily_wage >= 0
+  );
+
+comment on column public.caregiver_profiles.min_daily_wage is '희망 일당(원). care_requests.budget_per_day 와 맞춰 본다. null 이면 협의.';
+
+-- 17) 추천 후보 --------------------------------------------------------------
+--
+-- 점수 없이 "후보가 될 수 있는 사람"만 돌려준다. 순위는 앱이 매긴다.
+-- security definer 로 caregiver_profiles 의 RLS를 지나가되,
+-- 어떤 행이 나갈지는 아래 where 절이 전적으로 정한다.
+
+create or replace function public.recommendation_candidates(request_id uuid)
+returns table (
+  caregiver_id uuid,
+  name text,
+  gender text,
+  years_of_experience smallint,
+  certifications text[],
+  skills text[],
+  care_types text[],
+  regions text[],
+  min_daily_wage integer,
+  introduction text,
+  -- 'mon:morning' 모양. 함수 반환 타입을 단순하게 두려고 문자열로 내보낸다.
+  availability text[]
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  req public.care_requests%rowtype;
+begin
+  select * into req from public.care_requests r where r.id = request_id;
+
+  -- 없는 요청과 남의 요청을 구분해서 알려 주지 않는다.
+  -- 구분하면 아무 uuid나 넣어 보며 요청의 존재 여부를 알아낼 수 있다.
+  if req.id is null or req.guardian_id <> (select auth.uid()) then
+    return;
+  end if;
+
+  return query
+  select
+    p.id,
+    public.mask_person_name(pr.name),
+    p.gender,
+    p.years_of_experience,
+    p.certifications,
+    p.skills,
+    p.care_types,
+    p.regions,
+    p.min_daily_wage,
+    p.introduction,
+    coalesce(
+      array_agg(a.weekday || ':' || a.slot) filter (where a.weekday is not null),
+      '{}'
+    )
+  from public.caregiver_profiles p
+  join public.profiles pr on pr.id = p.id
+  left join public.caregiver_availability a on a.caregiver_id = p.id
+  where
+    -- 제외 조건 1: 맡지 않는 간병 장소
+    req.care_type = any (p.care_types)
+    -- 제외 조건 2: 보호자가 지정하지 않은 성별
+    and (req.preferred_caregiver_gender = 'any' or p.gender = req.preferred_caregiver_gender)
+    -- 이미 이 요청을 수락한 사람은 다시 추천하지 않는다
+    and p.id is distinct from req.matched_caregiver_id
+  group by p.id, pr.name
+  -- 앱이 순위를 매기므로 여기서는 자르는 기준만 정해 둔다.
+  -- 간병인이 50명을 넘어가면 경력이 짧은 쪽부터 잘린다 — 그때는 지역으로도 걸러야 한다.
+  order by p.years_of_experience desc, p.id
+  limit 50;
+end;
+$$;
+
+comment on function public.recommendation_candidates(uuid) is '요청의 추천 후보가 될 수 있는 간병인. 점수는 매기지 않는다. 본인이 올린 요청에만 쓸 수 있다.';
+
+revoke all on function public.recommendation_candidates(uuid) from public, anon;
+grant execute on function public.recommendation_candidates(uuid) to authenticated;

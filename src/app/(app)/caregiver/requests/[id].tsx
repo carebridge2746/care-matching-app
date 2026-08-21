@@ -2,9 +2,12 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { MatchScoreBadge } from '@/components/care';
 import { AppButton, AppText, Card, EmptyState, LoadingView, Screen, StatusBadge } from '@/components/common';
 import { formatPeriod } from '@/lib/date';
+import { scoreMatch } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
+import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
 import { Spacing } from '@/theme';
 import {
@@ -51,16 +54,24 @@ export default function CareRequestDetailScreen() {
   const load = useCaregiverRequestsStore((state) => state.load);
   const accept = useCaregiverRequestsStore((state) => state.accept);
 
+  const profile = useCaregiverProfileStore((state) => state.profile);
+  const loadProfile = useCaregiverProfileStore((state) => state.load);
+
   const [isConfirming, setIsConfirming] = useState(false);
   const caregiverId = user?.id;
 
   // 주소를 직접 열고 들어온 경우에는 목록이 비어 있다. 그때만 불러온다.
   useFocusEffect(
     useCallback(() => {
-      if (caregiverId && loadedCaregiverId !== caregiverId) {
+      if (!caregiverId) {
+        return;
+      }
+      if (loadedCaregiverId !== caregiverId) {
         void load(caregiverId);
       }
-    }, [caregiverId, load, loadedCaregiverId])
+      // 적합도를 보여 주려면 내 프로필이 있어야 한다
+      void loadProfile(caregiverId);
+    }, [caregiverId, load, loadProfile, loadedCaregiverId])
   );
 
   const request =
@@ -88,6 +99,10 @@ export default function CareRequestDetailScreen() {
   const isOpen = request.status === 'pending';
   const isAccepting = acceptingId === request.id;
 
+  // 프로필이 없으면 점수를 매길 수 없다. 그때는 수락을 막지 않는다.
+  const match = profile ? scoreMatch(profile, request) : null;
+  const canAccept = isOpen && match?.isEligible !== false;
+
   const handleAccept = async () => {
     if (!caregiverId) {
       return;
@@ -107,7 +122,7 @@ export default function CareRequestDetailScreen() {
       scroll
       edges={['bottom']}
       footer={
-        isOpen ? (
+        canAccept ? (
           isConfirming ? (
             <View style={styles.actions}>
               <AppButton
@@ -150,15 +165,38 @@ export default function CareRequestDetailScreen() {
         <AppText variant="body" tone="success">
           이 요청을 수락하셨습니다. 보호자에게 매칭 완료로 표시됩니다.
         </AppText>
-      ) : isOpen ? (
-        <AppText variant="body" tone="secondary">
-          환자 성함은 매칭이 확정된 뒤에 공개됩니다.
-        </AppText>
-      ) : (
+      ) : !isOpen ? (
         <AppText variant="body" tone="danger">
           지금은 수락할 수 없는 요청입니다.
         </AppText>
+      ) : match && !match.isEligible ? (
+        <AppText variant="body" tone="danger">
+          이 요청은 수락할 수 없습니다 — {match.excludedReason}
+        </AppText>
+      ) : (
+        <AppText variant="body" tone="secondary">
+          환자 성함은 매칭이 확정된 뒤에 공개됩니다.
+        </AppText>
       )}
+
+      {match?.isEligible ? (
+        <Card>
+          <View style={styles.matchHeader}>
+            <AppText variant="heading">나와의 적합도</AppText>
+            <MatchScoreBadge score={match.total} />
+          </View>
+          {match.items.map((item) => (
+            <View key={item.label} style={styles.row}>
+              <AppText variant="label" tone="secondary" style={styles.rowLabel}>
+                {item.label} {item.score}/{item.max}
+              </AppText>
+              <AppText variant="caption" tone="tertiary" style={styles.rowValue}>
+                {item.detail}
+              </AppText>
+            </View>
+          ))}
+        </Card>
+      ) : null}
 
       {errorMessage ? (
         <AppText variant="body" tone="danger">
@@ -227,10 +265,17 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
   },
   rowLabel: {
-    width: 92,
+    width: 124,
   },
   rowValue: {
     flex: 1,
+  },
+  matchHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+    flexWrap: 'wrap',
   },
   actions: {
     flexDirection: 'row',

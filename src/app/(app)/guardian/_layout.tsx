@@ -10,6 +10,7 @@ export default function GuardianLayout() {
       <Stack.Screen name="patients/index" options={{ title: '환자 관리' }} />
       <Stack.Screen name="patients/new" options={{ title: '환자 등록' }} />
       <Stack.Screen name="requests/index" options={{ title: '간병 요청' }} />
+      <Stack.Screen name="requests/[id]" options={{ title: '요청과 추천 간병인' }} />
       <Stack.Screen name="requests/new" options={{ title: '간병 요청 작성' }} />
     </Stack>
   );

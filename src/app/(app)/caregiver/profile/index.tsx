@@ -14,7 +14,7 @@ import {
   type ChoiceOption,
 } from '@/components/common';
 import { CommonCareSkills, CommonCertifications } from '@/lib/care-options';
-import { validateAtLeastOne, validateYearsOfExperience } from '@/lib/validation';
+import { validateAtLeastOne, validateBudget, validateYearsOfExperience } from '@/lib/validation';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { Spacing } from '@/theme';
@@ -110,6 +110,9 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
     profile?.careTypes.map((careType) => CareTypeLabels[careType]) ?? []
   );
   const [regions, setRegions] = useState<string[]>(profile?.regions ?? []);
+  const [wage, setWage] = useState(
+    profile?.minDailyWage !== undefined ? String(profile.minDailyWage) : ''
+  );
   const [introduction, setIntroduction] = useState(profile?.introduction ?? '');
 
   const [errors, setErrors] = useState<Record<string, string | null>>({});
@@ -122,6 +125,7 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
       skills: validateAtLeastOne(skills, '할 수 있는 간병'),
       careTypes: validateAtLeastOne(careTypeLabels, '맡을 수 있는 간병 장소'),
       regions: validateAtLeastOne(regions, '근무 가능 지역'),
+      wage: validateBudget(wage),
     };
 
     setErrors(nextErrors);
@@ -137,6 +141,7 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
       skills,
       careTypes: careTypeLabels.map((label) => CareTypeByLabel[label]).filter(Boolean),
       regions,
+      minDailyWage: wage.trim() ? Number(wage.trim().replace(/,/g, '')) : undefined,
       introduction: introduction.trim() || undefined,
     });
 
@@ -239,6 +244,18 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
           placeholder="서울 강남구"
           error={errors.regions}
           helperText="한 번에 한 곳씩 적고 '추가'를 눌러 주세요. 시군구 단위로 적으면 잘 맞습니다."
+        />
+        <TextField
+          label="희망 일당 (선택)"
+          value={wage}
+          onChangeText={(value) => {
+            setWage(value);
+            setErrors((previous) => ({ ...previous, wage: null }));
+          }}
+          placeholder="120000"
+          error={errors.wage}
+          helperText="비워 두면 협의로 봅니다. 보호자의 예산과 맞춰 추천 순위를 정합니다."
+          keyboardType="number-pad"
         />
         <TextField
           label="자기소개 (선택)"

@@ -143,7 +143,8 @@ export default function SignInScreen() {
             {DemoAccounts.map((account) => (
               <AppButton
                 key={account.id}
-                title={RoleLabels[account.role]}
+                // 같은 유형이 여럿이므로 이름까지 붙여야 서로 구분된다
+                title={`${RoleLabels[account.role]} ${account.name}`}
                 variant="secondary"
                 style={styles.demoButton}
                 onPress={() => fillDemoAccount(account.email)}
@@ -167,11 +168,12 @@ const styles = StyleSheet.create({
   },
   demoButtons: {
     flexDirection: 'row',
+    // 계정이 늘어나면 한 줄에 다 들어가지 않는다. 글자가 잘리느니 줄을 바꾼다.
+    flexWrap: 'wrap',
     gap: Spacing.sm,
     paddingTop: Spacing.xs,
   },
   demoButton: {
-    flex: 1,
-    paddingHorizontal: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
   },
 });

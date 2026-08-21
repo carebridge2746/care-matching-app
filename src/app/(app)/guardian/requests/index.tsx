@@ -67,6 +67,12 @@ export default function CareRequestListScreen() {
         </AppText>
       ) : null}
 
+      {requests.length > 0 ? (
+        <AppText variant="body" tone="secondary">
+          아래 &lsquo;추천 간병인 보기&rsquo;를 누르면 조건에 맞는 간병인을 점수와 함께 볼 수 있습니다.
+        </AppText>
+      ) : null}
+
       {requests.length === 0 ? (
         <EmptyState
           title="올린 간병 요청이 없습니다"
@@ -128,7 +134,14 @@ export default function CareRequestListScreen() {
                   : ''}
               </AppText>
 
-              {isClosed ? null : isConfirming ? (
+              {isClosed ? (
+                <AppButton
+                  title="요청 상세 보기"
+                  variant="outline"
+                  style={styles.footerButton}
+                  onPress={() => router.push(`/guardian/requests/${request.id}`)}
+                />
+              ) : isConfirming ? (
                 <View style={styles.confirm}>
                   <AppText variant="body" tone="danger">
                     {isPending
@@ -158,12 +171,19 @@ export default function CareRequestListScreen() {
                   </View>
                 </View>
               ) : (
-                <AppButton
-                  title={isPending ? '삭제' : '요청 취소'}
-                  variant="outline"
-                  style={styles.footerButton}
-                  onPress={() => setConfirmingId(request.id)}
-                />
+                <View style={styles.actions}>
+                  <AppButton
+                    title="추천 간병인 보기"
+                    style={styles.action}
+                    onPress={() => router.push(`/guardian/requests/${request.id}`)}
+                  />
+                  <AppButton
+                    title={isPending ? '삭제' : '요청 취소'}
+                    variant="outline"
+                    style={styles.action}
+                    onPress={() => setConfirmingId(request.id)}
+                  />
+                </View>
               )}
             </Card>
           );

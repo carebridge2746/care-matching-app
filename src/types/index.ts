@@ -237,10 +237,64 @@ export type CaregiverProfile = {
   careTypes: CareType[];
   /** 근무 가능 지역 (시군구 단위). 요청의 region 과 맞춰 본다. */
   regions: string[];
+  /** 희망 일당(원). 요청의 budgetPerDay 와 맞춰 본다. 정하지 않았으면 없음(협의) */
+  minDailyWage?: number;
   /** 보호자에게 보여 줄 자기소개 */
   introduction?: string;
   /** 근무 가능한 요일·시간대. 비어 있으면 아직 설정하지 않은 것이다. */
   availability: AvailabilitySlot[];
   createdAt: string;
   updatedAt: string;
+};
+
+// --- 매칭 --------------------------------------------------------------------
+
+/**
+ * 추천 목록에 보이는 간병인.
+ *
+ * 프로필 전체가 아니라 보호자가 고를 때 필요한 항목만 담는다.
+ * 이름은 매칭이 확정되기 전까지 성만 남기고 가린다 — 환자 이름을 가리는 것과 같은 규칙이다.
+ */
+export type CaregiverCandidate = {
+  id: string;
+  name: string;
+  gender: Gender;
+  yearsOfExperience: number;
+  certifications: string[];
+  skills: string[];
+  careTypes: CareType[];
+  regions: string[];
+  minDailyWage?: number;
+  introduction?: string;
+  availability: AvailabilitySlot[];
+};
+
+/** 점수 한 줄. 총점만 보여 주면 왜 그 사람이 위에 있는지 알 수 없다. */
+export type MatchScoreItem = {
+  /** '지역', '역량' 처럼 화면에 그대로 쓰는 이름 */
+  label: string;
+  score: number;
+  max: number;
+  /** 왜 이 점수인지 한 줄로 */
+  detail: string;
+};
+
+/**
+ * 요청 하나와 간병인 한 명을 맞춰 본 결과.
+ *
+ * 제외 조건에 걸리면 점수를 매기지 않는다. 맡을 수 없는 장소이거나
+ * 보호자가 지정한 성별이 아니면, 점수가 높아도 추천해서는 안 되기 때문이다.
+ */
+export type MatchResult = {
+  /** 0~100. 제외되면 0 */
+  total: number;
+  isEligible: boolean;
+  /** 제외된 이유. isEligible 이 true 면 없음 */
+  excludedReason?: string;
+  items: MatchScoreItem[];
+};
+
+export type CaregiverRecommendation = {
+  caregiver: CaregiverCandidate;
+  score: MatchResult;
 };

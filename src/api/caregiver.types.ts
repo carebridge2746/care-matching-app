@@ -18,6 +18,8 @@ export type CaregiverProfileInput = {
   skills: string[];
   careTypes: CareType[];
   regions: string[];
+  /** 희망 일당(원). 비워 두면 협의로 본다. */
+  minDailyWage?: number;
   introduction?: string;
 };
 

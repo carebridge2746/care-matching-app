@@ -47,6 +47,22 @@ export const DemoAccounts: MockAccount[] = [
     phone: '010-2345-6789',
   },
   {
+    id: 'mock-caregiver-2',
+    email: 'caregiver2@care.test',
+    password: DemoPassword,
+    name: '이미영',
+    role: 'caregiver',
+    phone: '010-3456-7890',
+  },
+  {
+    id: 'mock-caregiver-3',
+    email: 'caregiver3@care.test',
+    password: DemoPassword,
+    name: '최동해',
+    role: 'caregiver',
+    phone: '010-4567-8901',
+  },
+  {
     id: 'mock-admin-1',
     email: 'admin@care.test',
     password: DemoPassword,
@@ -70,11 +86,22 @@ function toAppUser({ password: _password, ...user }: MockAccount): AppUser {
 
 async function loadAccounts(): Promise<MockAccount[]> {
   const stored = await readJson<MockAccount[]>(UsersKey);
-  if (stored && stored.length > 0) {
+
+  if (!stored || stored.length === 0) {
+    await writeJson(UsersKey, DemoAccounts);
+    return DemoAccounts;
+  }
+
+  // 시연용 계정이 늘어났을 때 저장된 목록에 없는 것만 채워 넣는다.
+  // 계정을 추가할 때마다 기기의 저장소를 지우지 않아도 되게 하려는 것이다.
+  const missing = DemoAccounts.filter((demo) => !stored.some((item) => item.id === demo.id));
+  if (missing.length === 0) {
     return stored;
   }
-  await writeJson(UsersKey, DemoAccounts);
-  return DemoAccounts;
+
+  const merged = [...stored, ...missing];
+  await writeJson(UsersKey, merged);
+  return merged;
 }
 
 async function saveAccounts(accounts: MockAccount[]): Promise<void> {
@@ -154,6 +181,16 @@ export const mockAuthAdapter: AuthAdapter = {
     await removeKey(SessionKey);
   },
 };
+
+/**
+ * 저장된 사용자 목록을 이름 조회용으로 읽는다.
+ *
+ * Mock 모드에는 profiles 테이블이 없어서, 추천 목록이 간병인 이름을 보여 주려면
+ * 여기까지 와야 한다. 비밀번호는 떼고 넘긴다.
+ */
+export async function readMockUsers(): Promise<AppUser[]> {
+  return (await loadAccounts()).map(toAppUser);
+}
 
 /** 개발 중 저장된 Mock 데이터를 초기화할 때 사용한다 */
 export async function resetMockAuthData(): Promise<void> {

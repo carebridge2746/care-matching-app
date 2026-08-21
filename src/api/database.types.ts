@@ -96,6 +96,8 @@ export type CaregiverProfileRow = {
   skills: string[];
   care_types: CareType[];
   regions: string[];
+  /** 희망 일당(원). 정하지 않았으면 null(협의) */
+  min_daily_wage: number | null;
   introduction: string | null;
   created_at: string;
   updated_at: string;
@@ -107,6 +109,26 @@ export type CaregiverAvailabilityRow = {
   weekday: Weekday;
   slot: CareTimeSlot;
   created_at: string;
+};
+
+/**
+ * public.recommendation_candidates() 가 돌려주는 행.
+ *
+ * 제외 조건에 걸리지 않는 간병인만, 이름을 가린 채로 담긴다.
+ * 가능 시간은 'mon:morning' 모양의 문자열 배열이다 — 함수 반환 타입을 단순하게 두려는 것이다.
+ */
+export type RecommendationCandidateRow = {
+  caregiver_id: string;
+  name: string;
+  gender: Gender;
+  years_of_experience: number;
+  certifications: string[];
+  skills: string[];
+  care_types: CareType[];
+  regions: string[];
+  min_daily_wage: number | null;
+  introduction: string | null;
+  availability: string[];
 };
 
 /** 상태 표기 변환 — 저장할 때 */
@@ -215,6 +237,11 @@ export type Database = {
       accept_care_request: {
         Args: { request_id: string };
         Returns: string | null;
+      };
+      /** 이 요청의 추천 후보가 될 수 있는 간병인. 본인이 올린 요청에만 쓸 수 있다. */
+      recommendation_candidates: {
+        Args: { request_id: string };
+        Returns: RecommendationCandidateRow[];
       };
     };
     Enums: Record<string, never>;

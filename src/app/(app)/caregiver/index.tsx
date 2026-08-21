@@ -1,10 +1,11 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { CaregiverRequestCard } from '@/components/care';
 import { AppButton, AppText, Card, Screen } from '@/components/common';
 import { summarizeAvailability } from '@/lib/availability';
+import { rankRequestsForCaregiver } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
@@ -43,11 +44,16 @@ export default function CaregiverHomeScreen() {
     }, [caregiverId, loadProfile, loadRequests])
   );
 
+  // 프로필이 있으면 나에게 가장 잘 맞는 요청을, 없으면 가장 최근 요청을 보여 준다
+  const [best] = useMemo(
+    () => rankRequestsForCaregiver(available, profile).filter(({ score }) => score?.isEligible !== false),
+    [available, profile]
+  );
+
   if (!user) {
     return null;
   }
 
-  const [latest] = available;
   const availabilitySummary = profile ? summarizeAvailability(profile.availability) : null;
   const isReady = Boolean(profile) && Boolean(availabilitySummary);
 
@@ -122,12 +128,15 @@ export default function CaregiverHomeScreen() {
         </AppText>
       </Card>
 
-      {latest ? (
+      {best ? (
         <View style={styles.section}>
-          <AppText variant="heading">가장 최근 요청</AppText>
+          <AppText variant="heading">
+            {best.score ? '나와 가장 잘 맞는 요청' : '가장 최근 요청'}
+          </AppText>
           <CaregiverRequestCard
-            request={latest}
-            onPress={() => router.push(`/caregiver/requests/${latest.id}`)}
+            request={best.request}
+            matchScore={best.score?.total}
+            onPress={() => router.push(`/caregiver/requests/${best.request.id}`)}
           />
         </View>
       ) : null}
