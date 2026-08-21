@@ -135,6 +135,112 @@ export type CareRequest = {
   /** 일당 예산(원). 미정이면 없음 */
   budgetPerDay?: number;
   status: CareRequestStatus;
+  /** 요청을 수락한 간병인(profiles.id). 아직 매칭 전이면 없음 */
+  matchedCaregiverId?: string;
+  /** 간병인이 수락한 시각 */
+  matchedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// --- 간병인이 보는 요청 -------------------------------------------------------
+
+/**
+ * 간병인에게 보여 주는 환자 요약.
+ *
+ * 요청을 수락할지 판단하는 데 필요한 항목만 담는다.
+ * 이름은 매칭이 확정되기 전까지 성만 남기고 가리며(김OO), 연락처와 특이사항은 아예 넣지 않는다.
+ */
+export type PatientSummary = {
+  name: string;
+  birthYear: number;
+  gender: Gender;
+  mobility: MobilityLevel;
+  cognition: CognitionLevel;
+  conditions: string[];
+};
+
+/**
+ * 간병인 화면에 보이는 간병 요청.
+ *
+ * 보호자를 가리키는 값(guardianId)과 환자 식별자(patientId)는 들어 있지 않다.
+ * 간병인은 "누가 올렸는지"가 아니라 "어떤 간병인지"만 보고 수락 여부를 정한다.
+ */
+export type CaregiverCareRequest = Omit<CareRequest, 'guardianId' | 'patientId'> & {
+  patient: PatientSummary;
+};
+
+// --- 간병인 프로필 -----------------------------------------------------------
+
+/** 요일. 주간 가능 시간표의 세로축이다. */
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+/** 화면과 저장 양쪽이 같은 순서를 쓰도록 한 곳에 둔다 (월요일 시작) */
+export const Weekdays: Weekday[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+export const WeekdayLabels: Record<Weekday, string> = {
+  mon: '월요일',
+  tue: '화요일',
+  wed: '수요일',
+  thu: '목요일',
+  fri: '금요일',
+  sat: '토요일',
+  sun: '일요일',
+};
+
+/**
+ * 하루를 나누는 간병 시간대.
+ *
+ * 분 단위로 받지 않는다. 간병 근무가 실제로 이 세 덩어리로 짜이고,
+ * 요청의 시간대(dailyStartTime~dailyEndTime)와 겹치는지 보는 데도 이만큼이면 충분하다.
+ */
+export type CareTimeSlot = 'morning' | 'afternoon' | 'night';
+
+export const CareTimeSlots: CareTimeSlot[] = ['morning', 'afternoon', 'night'];
+
+export const CareTimeSlotLabels: Record<CareTimeSlot, string> = {
+  morning: '오전',
+  afternoon: '오후',
+  night: '야간',
+};
+
+/** 시간대가 가리키는 실제 시각. 화면 안내와 매칭 계산이 같은 값을 보도록 여기에 둔다. */
+export const CareTimeSlotHours: Record<CareTimeSlot, string> = {
+  morning: '06:00 ~ 12:00',
+  afternoon: '12:00 ~ 18:00',
+  night: '18:00 ~ 06:00',
+};
+
+/** 가능 시간표의 한 칸 */
+export type AvailabilitySlot = {
+  weekday: Weekday;
+  slot: CareTimeSlot;
+};
+
+/**
+ * 간병인이 등록한 프로필.
+ *
+ * 간병인 한 명당 하나이며 id는 `profiles.id` 와 같다.
+ * 보호자가 등록하는 환자와 달리 여러 개를 가질 수 없어서 별도 식별자를 두지 않았다.
+ */
+export type CaregiverProfile = {
+  id: string;
+  /** 요청의 '간병인 성별' 선호(preferredCaregiverGender)와 맞춰 보는 값 */
+  gender: Gender;
+  /** 간병 경력(년). 0이면 신입이다. */
+  yearsOfExperience: number;
+  /** 보유 자격 (요양보호사, 간호조무사 …) */
+  certifications: string[];
+  /** 할 수 있는 간병 역량. 요청의 requiredSkills 와 같은 목록에서 고른다. */
+  skills: string[];
+  /** 맡을 수 있는 간병 장소 */
+  careTypes: CareType[];
+  /** 근무 가능 지역 (시군구 단위). 요청의 region 과 맞춰 본다. */
+  regions: string[];
+  /** 보호자에게 보여 줄 자기소개 */
+  introduction?: string;
+  /** 근무 가능한 요일·시간대. 비어 있으면 아직 설정하지 않은 것이다. */
+  availability: AvailabilitySlot[];
   createdAt: string;
   updatedAt: string;
 };

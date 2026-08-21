@@ -1,4 +1,4 @@
-import type { CareRequestStatus, CareType, CaregiverGenderPreference, CognitionLevel, Gender, MobilityLevel, UserRole } from '@/types';
+import type { CareRequestStatus, CareTimeSlot, CareType, CaregiverGenderPreference, CognitionLevel, Gender, MobilityLevel, UserRole, Weekday } from '@/types';
 
 /**
  * Supabase 테이블 타입 — 데이터베이스와 앱이 만나는 경계.
@@ -59,11 +59,54 @@ export type CareRequestRow = {
   preferred_caregiver_gender: CaregiverGenderPreference;
   budget_per_day: number | null;
   status: CareRequestStatusRow;
-  /** Phase 4에서 AI가 채운다. 구조가 정해지기 전까지는 형태를 고정하지 않는다. */
+  /** 요청을 수락한 간병인(profiles.id). 아직 매칭 전이면 null */
+  matched_caregiver_id: string | null;
+  matched_at: string | null;
+  /** AI가 원문을 구조화한 결과. 구조가 정해지기 전까지는 형태를 고정하지 않는다. */
   ai_conditions: unknown | null;
   ai_analyzed_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * 간병인에게 공개하는 요청 뷰(public.caregiver_care_requests)의 행.
+ *
+ * 보호자를 가리키는 값은 들어 있지 않고, 환자 정보는 판단에 필요한 항목만 붙어 있다.
+ * 환자 이름은 이 요청을 수락한 간병인에게만 원래 값으로 내려오고 그 전에는 가려져 있다.
+ */
+export type CaregiverCareRequestRow = Omit<
+  CareRequestRow,
+  'guardian_id' | 'patient_id' | 'ai_conditions' | 'ai_analyzed_at'
+> & {
+  patient_name: string;
+  patient_birth_year: number;
+  patient_gender: Gender;
+  patient_mobility: MobilityLevel;
+  patient_cognition: CognitionLevel;
+  patient_conditions: string[];
+};
+
+export type CaregiverProfileRow = {
+  /** profiles.id 와 같다. 간병인 한 명당 프로필은 하나다. */
+  id: string;
+  gender: Gender;
+  years_of_experience: number;
+  certifications: string[];
+  skills: string[];
+  care_types: CareType[];
+  regions: string[];
+  introduction: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** 가능 시간표의 한 칸이 한 행이다. 매칭에서 "이 시간에 가능한 사람"을 바로 훑기 위한 모양이다. */
+export type CaregiverAvailabilityRow = {
+  caregiver_id: string;
+  weekday: Weekday;
+  slot: CareTimeSlot;
+  created_at: string;
 };
 
 /** 상태 표기 변환 — 저장할 때 */
@@ -113,6 +156,8 @@ export type Database = {
           | 'required_skills'
           | 'preferred_caregiver_gender'
           | 'status'
+          | 'matched_caregiver_id'
+          | 'matched_at'
           | 'ai_conditions'
           | 'ai_analyzed_at'
         > &
@@ -123,6 +168,8 @@ export type Database = {
               | 'required_skills'
               | 'preferred_caregiver_gender'
               | 'status'
+              | 'matched_caregiver_id'
+              | 'matched_at'
               | 'ai_conditions'
               | 'ai_analyzed_at'
             >
@@ -130,9 +177,46 @@ export type Database = {
         Update: Partial<CareRequestRow>;
         Relationships: [];
       };
+      caregiver_profiles: {
+        Row: CaregiverProfileRow;
+        Insert: Omit<
+          CaregiverProfileRow,
+          'created_at' | 'updated_at' | 'certifications' | 'skills' | 'care_types' | 'regions'
+        > &
+          Partial<
+            Pick<
+              CaregiverProfileRow,
+              'created_at' | 'updated_at' | 'certifications' | 'skills' | 'care_types' | 'regions'
+            >
+          >;
+        Update: Partial<CaregiverProfileRow>;
+        Relationships: [];
+      };
+      caregiver_availability: {
+        Row: CaregiverAvailabilityRow;
+        Insert: Omit<CaregiverAvailabilityRow, 'created_at'> &
+          Partial<Pick<CaregiverAvailabilityRow, 'created_at'>>;
+        Update: Partial<CaregiverAvailabilityRow>;
+        Relationships: [];
+      };
     };
-    Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Views: {
+      /** 간병인이 읽을 수 있는 유일한 요청 창구. 대기중 요청과 본인이 수락한 요청만 담긴다. */
+      caregiver_care_requests: {
+        Row: CaregiverCareRequestRow;
+        Relationships: [];
+      };
+    };
+    Functions: {
+      /**
+       * 대기중 요청을 수락한다.
+       * 수락한 요청의 id를 돌려주고, 이미 다른 간병인이 가져갔으면 null을 돌려준다.
+       */
+      accept_care_request: {
+        Args: { request_id: string };
+        Returns: string | null;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

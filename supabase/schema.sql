@@ -287,3 +287,298 @@ create trigger care_requests_set_updated_at
 --   Phase 11 (관리자): profiles.role = 'admin' 인 사용자에게 조회 권한을 준다.
 --     이때 정책 안에서 profiles 를 다시 조회하면 재귀가 생기므로,
 --     역할을 JWT 클레임에 넣거나 security definer 함수로 감싸서 판단한다.
+
+-- ===========================================================================
+-- Phase 4 — 간병인이 요청을 보고 수락하기
+-- ===========================================================================
+--
+-- 여기서 처음으로 간병인이 다른 사람의 자료를 읽는다.
+-- care_requests 와 patients 에 간병인용 select 정책을 추가하지 않는다.
+-- 정책을 열면 "테이블 전체를 읽되 조건에 맞는 행만"이 되어, 보호자 식별자나
+-- 특이사항처럼 아직 보여 줄 이유가 없는 컬럼까지 함께 열리기 때문이다.
+--
+-- 대신 창구를 두 개만 만든다.
+--   조회: public.caregiver_care_requests 뷰 — 필요한 컬럼만, 이름은 가려서
+--   수락: public.accept_care_request() 함수 — 대기중인 요청만 바꾼다
+-- 두 창구 모두 호출한 사람이 간병인인지 데이터베이스가 직접 확인한다.
+
+-- 9) 매칭된 간병인 기록 ------------------------------------------------------
+--
+-- Phase 7에서 matches 테이블(수락·거절 이력, 간병 진행 기록)을 따로 만든다.
+-- 지금은 "이 요청을 누가 가져갔는가" 한 가지만 필요하므로 요청 행에 함께 둔다.
+
+alter table public.care_requests
+  add column if not exists matched_caregiver_id uuid references public.profiles (id) on delete set null;
+
+alter table public.care_requests
+  add column if not exists matched_at timestamptz;
+
+comment on column public.care_requests.matched_caregiver_id is '요청을 수락한 간병인. Phase 7에서 matches 테이블로 옮긴다.';
+
+-- 수락한 간병인이 있는데 상태가 pending 으로 남아 있는 어긋난 행을 막는다
+alter table public.care_requests
+  drop constraint if exists care_requests_matched_state_valid;
+alter table public.care_requests
+  add constraint care_requests_matched_state_valid check (
+    matched_caregiver_id is null or status <> 'pending'
+  );
+
+-- 간병인이 "내가 수락한 요청"을 훑는 조회에 쓴다
+create index if not exists care_requests_matched_caregiver_idx
+  on public.care_requests (matched_caregiver_id);
+
+-- 10) 역할 판별과 이름 가리기 -------------------------------------------------
+--
+-- 정책이나 뷰 안에서 profiles 를 그대로 조회하면 profiles 의 정책이 다시 걸려 재귀가 생긴다.
+-- security definer 함수로 감싸서 한 번만 확인한다.
+
+create or replace function public.is_caregiver()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = (select auth.uid()) and p.role = 'caregiver'
+  );
+$$;
+
+comment on function public.is_caregiver() is '로그인한 사용자가 간병인인지 확인한다. 정책·뷰 안에서 profiles 를 직접 조회하면 재귀가 생겨 함수로 감싼다.';
+
+-- '김영희' → '김OO'. 앱의 src/lib/privacy.ts 가 Mock 모드에서 같은 규칙을 쓴다.
+create or replace function public.mask_person_name(full_name text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select case
+    when full_name is null then ''
+    when char_length(trim(full_name)) <= 1 then trim(full_name)
+    else left(trim(full_name), 1) || repeat('O', char_length(trim(full_name)) - 1)
+  end;
+$$;
+
+-- 11) 간병인이 보는 요청 뷰 ---------------------------------------------------
+--
+-- security_invoker = false (기본값)이므로 뷰는 소유자 권한으로 실행되어
+-- care_requests / patients 의 RLS 를 지나간다. 그래서 어떤 행을 내보낼지는
+-- 전적으로 아래 where 절이 정한다. 두 가지 행만 나간다.
+--   (1) 아직 아무도 수락하지 않은 요청 (status = 'pending')
+--   (2) 지금 로그인한 간병인이 수락한 요청
+-- 그리고 간병인이 아닌 사용자에게는 한 행도 나가지 않는다.
+--
+-- 환자 이름은 수락하기 전까지 가린다. 나이·성별·거동/인지 상태·질환은
+-- 요청을 받을 수 있는지 판단하는 데 필요하므로 그대로 내보내고,
+-- 특이사항(care_notes)과 보호자 정보는 아예 넣지 않는다.
+
+create or replace view public.caregiver_care_requests
+with (security_invoker = false) as
+select
+  r.id,
+  r.request_text,
+  r.care_type,
+  r.region,
+  r.start_date,
+  r.end_date,
+  r.daily_start_time,
+  r.daily_end_time,
+  r.required_skills,
+  r.preferred_caregiver_gender,
+  r.budget_per_day,
+  r.status,
+  r.matched_caregiver_id,
+  r.matched_at,
+  r.created_at,
+  r.updated_at,
+  case
+    when r.matched_caregiver_id = (select auth.uid()) then p.name
+    else public.mask_person_name(p.name)
+  end as patient_name,
+  p.birth_year as patient_birth_year,
+  p.gender as patient_gender,
+  p.mobility as patient_mobility,
+  p.cognition as patient_cognition,
+  p.conditions as patient_conditions
+from public.care_requests r
+join public.patients p on p.id = r.patient_id
+where public.is_caregiver()
+  and (r.status = 'pending' or r.matched_caregiver_id = (select auth.uid()));
+
+comment on view public.caregiver_care_requests is '간병인이 요청을 읽는 유일한 창구. 대기중 요청과 본인이 수락한 요청만, 보호자 정보 없이 내보낸다.';
+
+revoke all on public.caregiver_care_requests from anon;
+grant select on public.caregiver_care_requests to authenticated;
+
+-- 12) 요청 수락 --------------------------------------------------------------
+--
+-- 조회와 수정을 한 문장에서 처리한다. "대기중인지 확인한 뒤 바꾸기"를 앱에서 두 번에 나눠 하면
+-- 그 사이에 다른 간병인이 같은 요청을 가져갈 수 있다. update ... where status = 'pending' 은
+-- 행 잠금 안에서 판정되므로, 동시에 눌러도 한 명만 성공한다.
+--
+-- 성공하면 요청 id를, 이미 넘어간 요청이면 null 을 돌려준다.
+-- 없는 요청과 이미 매칭된 요청을 구분하지 않는다 — 구분해서 알려 주면
+-- 아무 uuid나 넣어 보며 요청의 존재 여부를 알아낼 수 있다.
+
+create or replace function public.accept_care_request(request_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  caregiver uuid := (select auth.uid());
+  accepted_id uuid;
+begin
+  if caregiver is null or not public.is_caregiver() then
+    raise exception '간병인만 요청을 수락할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.care_requests
+     set status = 'matched',
+         matched_caregiver_id = caregiver,
+         matched_at = now()
+   where id = request_id
+     and status = 'pending'
+  returning id into accepted_id;
+
+  return accepted_id;
+end;
+$$;
+
+comment on function public.accept_care_request(uuid) is '대기중 요청을 수락해 matched 로 바꾼다. 이미 넘어간 요청이면 null 을 돌려준다.';
+
+revoke all on function public.accept_care_request(uuid) from public, anon;
+grant execute on function public.accept_care_request(uuid) to authenticated;
+
+-- 13) 남은 구멍 --------------------------------------------------------------
+--
+-- 보호자의 update 정책은 아직 컬럼을 가리지 않아서, 보호자가 자기 요청의
+-- matched_caregiver_id 를 직접 채워 넣을 수 있다. 남의 자료를 건드리지는 못하므로
+-- 정보가 새지는 않지만, 매칭 기록이 어긋날 수는 있다.
+-- Phase 7에서 matches 테이블을 만들면서 보호자가 바꿀 수 있는 컬럼을 좁힌다.
+
+-- ===========================================================================
+-- Phase 5 — 간병인 프로필과 가능 시간
+-- ===========================================================================
+--
+-- 관계
+--   profiles(간병인) 1 ── 1 caregiver_profiles ── N caregiver_availability
+--
+-- 프로필과 시간표를 나눈 이유는 조회 방향이 다르기 때문이다.
+-- 프로필은 "이 사람이 누구인가"를 한 행으로 읽고, 시간표는 매칭이
+-- "이 요일 이 시간에 가능한 사람"을 훑는다. 후자는 칸 하나가 한 행일 때 가장 단순하다.
+
+-- 14) 간병인 프로필 ----------------------------------------------------------
+
+create table if not exists public.caregiver_profiles (
+  -- profiles.id 를 그대로 기본키로 쓴다. 간병인 한 명당 프로필은 하나뿐이다.
+  id uuid primary key references public.profiles (id) on delete cascade,
+
+  -- 요청의 preferred_caregiver_gender 와 맞춰 보는 값
+  gender text not null check (gender in ('male', 'female', 'other')),
+
+  -- 경력이 없어도 등록할 수 있어야 하므로 0을 허용한다
+  years_of_experience smallint not null default 0
+    check (years_of_experience between 0 and 60),
+
+  -- 보유 자격 (요양보호사, 간호조무사 …). 앱의 src/lib/care-options.ts 목록에서 고른다.
+  certifications text[] not null default '{}',
+  -- 할 수 있는 간병 역량. 요청의 required_skills 와 같은 목록을 쓴다.
+  skills text[] not null default '{}',
+  -- 맡을 수 있는 간병 장소
+  care_types text[] not null default '{}',
+  -- 근무 가능 지역 (시군구 단위). 요청의 region 과 맞춰 본다.
+  regions text[] not null default '{}',
+
+  introduction text,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+comment on table public.caregiver_profiles is '간병인이 등록한 역량·경력·근무 조건. profiles 와 1:1이다.';
+comment on column public.caregiver_profiles.skills is '할 수 있는 간병 역량. care_requests.required_skills 와 겹치는 개수로 매칭 점수를 낸다.';
+comment on column public.caregiver_profiles.regions is '근무 가능 지역. care_requests.region 과 맞춰 본다.';
+
+-- 매칭이 역량·지역으로 후보를 좁히는 조회에 쓴다
+create index if not exists caregiver_profiles_skills_idx
+  on public.caregiver_profiles using gin (skills);
+create index if not exists caregiver_profiles_regions_idx
+  on public.caregiver_profiles using gin (regions);
+
+alter table public.caregiver_profiles enable row level security;
+
+-- 지금은 본인만 다룰 수 있다.
+-- 보호자에게 간병인을 보여 주는 일은 추천 결과를 내보내는 Phase 6에서 별도 창구로 연다.
+drop policy if exists "간병인 본인 프로필 조회" on public.caregiver_profiles;
+create policy "간병인 본인 프로필 조회"
+  on public.caregiver_profiles for select
+  to authenticated
+  using ((select auth.uid()) = id);
+
+drop policy if exists "간병인 본인 프로필 등록" on public.caregiver_profiles;
+create policy "간병인 본인 프로필 등록"
+  on public.caregiver_profiles for insert
+  to authenticated
+  -- 보호자가 간병인 프로필을 만들 수는 없다
+  with check ((select auth.uid()) = id and public.is_caregiver());
+
+drop policy if exists "간병인 본인 프로필 수정" on public.caregiver_profiles;
+create policy "간병인 본인 프로필 수정"
+  on public.caregiver_profiles for update
+  to authenticated
+  using ((select auth.uid()) = id)
+  with check ((select auth.uid()) = id);
+
+drop trigger if exists caregiver_profiles_set_updated_at on public.caregiver_profiles;
+create trigger caregiver_profiles_set_updated_at
+  before update on public.caregiver_profiles
+  for each row execute function public.set_updated_at();
+
+-- 15) 가능 시간표 ------------------------------------------------------------
+--
+-- 칸 하나가 한 행이다 (월요일 오전 = 한 행).
+-- 시각을 분 단위로 받지 않고 하루를 오전/오후/야간 세 덩어리로 나눈다.
+-- 간병 근무가 실제로 이렇게 짜이고, 요청의 시간대와 겹치는지 보는 데도 이만큼이면 충분하다.
+
+create table if not exists public.caregiver_availability (
+  caregiver_id uuid not null references public.caregiver_profiles (id) on delete cascade,
+  weekday text not null check (weekday in ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')),
+  slot text not null check (slot in ('morning', 'afternoon', 'night')),
+  created_at timestamptz not null default now(),
+  -- 같은 칸이 두 번 들어가지 않게 한다
+  primary key (caregiver_id, weekday, slot)
+);
+
+comment on table public.caregiver_availability is '간병인이 근무할 수 있는 요일·시간대. 칸 하나가 한 행이다.';
+comment on column public.caregiver_availability.slot is 'morning 06~12시 / afternoon 12~18시 / night 18~06시';
+
+-- 매칭이 "이 요일 이 시간에 가능한 간병인"을 훑는 조회에 쓴다
+create index if not exists caregiver_availability_slot_idx
+  on public.caregiver_availability (weekday, slot);
+
+alter table public.caregiver_availability enable row level security;
+
+drop policy if exists "간병인 본인 가능시간 조회" on public.caregiver_availability;
+create policy "간병인 본인 가능시간 조회"
+  on public.caregiver_availability for select
+  to authenticated
+  using ((select auth.uid()) = caregiver_id);
+
+drop policy if exists "간병인 본인 가능시간 등록" on public.caregiver_availability;
+create policy "간병인 본인 가능시간 등록"
+  on public.caregiver_availability for insert
+  to authenticated
+  with check ((select auth.uid()) = caregiver_id);
+
+-- 표 전체를 바꿀 때 지우고 다시 넣으므로 삭제 정책이 필요하다
+drop policy if exists "간병인 본인 가능시간 삭제" on public.caregiver_availability;
+create policy "간병인 본인 가능시간 삭제"
+  on public.caregiver_availability for delete
+  to authenticated
+  using ((select auth.uid()) = caregiver_id);
+
+-- update 정책은 두지 않는다. 칸은 켜거나 끄는 것뿐이라 고칠 내용이 없다.

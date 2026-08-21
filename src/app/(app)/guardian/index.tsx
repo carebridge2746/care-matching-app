@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import { useEffect } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { AppButton, AppText, Card, Screen, StatusBadge } from '@/components/common';
@@ -28,19 +28,23 @@ export default function GuardianHomeScreen() {
 
   const guardianId = user?.id;
 
-  useEffect(() => {
-    if (!guardianId) {
-      return;
-    }
-    void loadPatients(guardianId);
-    void loadRequests(guardianId);
-  }, [guardianId, loadPatients, loadRequests]);
+  // 화면에 돌아올 때마다 다시 불러온다. 간병인이 요청을 수락하면 상태가 바뀌기 때문이다.
+  useFocusEffect(
+    useCallback(() => {
+      if (!guardianId) {
+        return;
+      }
+      void loadPatients(guardianId);
+      void loadRequests(guardianId);
+    }, [guardianId, loadPatients, loadRequests])
+  );
 
   if (!user) {
     return null;
   }
 
   const pendingCount = requests.filter((request) => request.status === 'pending').length;
+  const matchedCount = requests.filter((request) => request.matchedCaregiverId).length;
   const recentRequests = requests.slice(0, 2);
   const hasPatients = patients.length > 0;
 
@@ -85,7 +89,7 @@ export default function GuardianHomeScreen() {
         <AppText variant="subheading">간병 요청</AppText>
         <AppText variant="body" tone="secondary">
           {requests.length > 0
-            ? `${requests.length}건 · 대기중 ${pendingCount}건`
+            ? `${requests.length}건 · 대기중 ${pendingCount}건 · 매칭 완료 ${matchedCount}건`
             : '아직 올린 요청이 없습니다'}
         </AppText>
       </Card>

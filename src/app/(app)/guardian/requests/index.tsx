@@ -1,9 +1,9 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { AppButton, AppText, Card, EmptyState, LoadingView, Screen, StatusBadge } from '@/components/common';
-import { formatPeriod } from '@/lib/date';
+import { formatKoreanTimestamp, formatPeriod } from '@/lib/date';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCareRequestsStore } from '@/store/use-care-requests-store';
 import { usePatientsStore } from '@/store/use-patients-store';
@@ -35,13 +35,16 @@ export default function CareRequestListScreen() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const guardianId = user?.id;
 
-  useEffect(() => {
-    if (!guardianId) {
-      return;
-    }
-    void load(guardianId);
-    void loadPatients(guardianId);
-  }, [guardianId, load, loadPatients]);
+  // 화면에 돌아올 때마다 다시 불러온다. 간병인이 요청을 수락하면 상태가 바뀌기 때문이다.
+  useFocusEffect(
+    useCallback(() => {
+      if (!guardianId) {
+        return;
+      }
+      void load(guardianId);
+      void loadPatients(guardianId);
+    }, [guardianId, load, loadPatients])
+  );
 
   if (isLoading && requests.length === 0) {
     return <LoadingView message="간병 요청을 불러오는 중입니다" />;
@@ -100,6 +103,12 @@ export default function CareRequestListScreen() {
               {request.dailyStartTime && request.dailyEndTime ? (
                 <AppText variant="caption" tone="secondary">
                   매일 {request.dailyStartTime} ~ {request.dailyEndTime}
+                </AppText>
+              ) : null}
+
+              {request.matchedAt ? (
+                <AppText variant="body" tone="success">
+                  간병인이 수락했습니다 · {formatKoreanTimestamp(request.matchedAt)}
                 </AppText>
               ) : null}
 

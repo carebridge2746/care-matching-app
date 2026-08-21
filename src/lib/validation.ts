@@ -162,3 +162,31 @@ export function validateTime(value: string, label: string): string | null {
   }
   return null;
 }
+
+// --- Phase 5: 간병인 프로필 ---------------------------------------------------
+
+/** 경력으로 받아들이는 최대 년수 */
+export const MaxYearsOfExperience = 60;
+
+/** 간병 경력(년) — 0 이상의 정수. 경력이 없어도 등록할 수 있어야 하므로 0을 허용한다. */
+export function validateYearsOfExperience(value: string): string | null {
+  const text = value.trim();
+  if (!text) {
+    return '간병 경력을 입력해 주세요. 경력이 없으면 0을 적어 주세요.';
+  }
+
+  const years = Number(text);
+  if (!Number.isInteger(years) || years < 0) {
+    return '경력은 0 이상의 숫자로 입력해 주세요. 예) 3';
+  }
+  if (years > MaxYearsOfExperience) {
+    return `경력은 ${MaxYearsOfExperience}년까지 입력할 수 있습니다.`;
+  }
+
+  return null;
+}
+
+/** 목록에서 최소 한 개는 골라야 하는 항목 (자격, 역량, 지역 …) */
+export function validateAtLeastOne(values: string[], label: string): string | null {
+  return values.length > 0 ? null : `${label}을(를) 하나 이상 선택해 주세요.`;
+}

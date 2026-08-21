@@ -1,7 +1,7 @@
 import { ApiError } from '@/api/api-error';
 import { removeMockRequestsForPatient } from '@/api/care-requests.mock';
+import { delay, loadPatients, savePatients } from '@/api/mock-store';
 import type { PatientInput, PatientsAdapter } from '@/api/patients.types';
-import { readJson, writeJson } from '@/lib/storage';
 import type { Patient } from '@/types';
 
 /**
@@ -10,23 +10,8 @@ import type { Patient } from '@/types';
  * Supabase 프로젝트 없이도 환자 등록 → 목록 → 삭제 흐름을 검증하기 위한 구현이다.
  */
 
-const StorageKey = 'careapp.mock.patients';
-const NetworkDelayMs = 300;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function createId(): string {
   return `pat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-async function loadAll(): Promise<Patient[]> {
-  return (await readJson<Patient[]>(StorageKey)) ?? [];
-}
-
-async function saveAll(patients: Patient[]): Promise<void> {
-  await writeJson(StorageKey, patients);
 }
 
 /** 최근에 등록한 환자가 위로 오도록 정렬한다 */
@@ -52,25 +37,25 @@ function applyInput(base: Pick<Patient, 'id' | 'guardianId' | 'createdAt'>, inpu
 
 export const mockPatientsAdapter: PatientsAdapter = {
   async list(guardianId) {
-    await delay(NetworkDelayMs);
-    const all = await loadAll();
+    await delay();
+    const all = await loadPatients();
     return all.filter((patient) => patient.guardianId === guardianId).sort(byNewest);
   },
 
   async create(guardianId, input) {
-    await delay(NetworkDelayMs);
-    const all = await loadAll();
+    await delay();
+    const all = await loadPatients();
     const patient = applyInput(
       { id: createId(), guardianId, createdAt: new Date().toISOString() },
       input
     );
-    await saveAll([...all, patient]);
+    await savePatients([...all, patient]);
     return patient;
   },
 
   async update(id, input) {
-    await delay(NetworkDelayMs);
-    const all = await loadAll();
+    await delay();
+    const all = await loadPatients();
     const target = all.find((patient) => patient.id === id);
 
     if (!target) {
@@ -81,19 +66,19 @@ export const mockPatientsAdapter: PatientsAdapter = {
       { id: target.id, guardianId: target.guardianId, createdAt: target.createdAt },
       input
     );
-    await saveAll(all.map((patient) => (patient.id === id ? updated : patient)));
+    await savePatients(all.map((patient) => (patient.id === id ? updated : patient)));
     return updated;
   },
 
   async remove(id) {
-    await delay(NetworkDelayMs);
-    const all = await loadAll();
+    await delay();
+    const all = await loadPatients();
 
     if (!all.some((patient) => patient.id === id)) {
       throw new ApiError('not_found', '환자 정보를 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
 
-    await saveAll(all.filter((patient) => patient.id !== id));
+    await savePatients(all.filter((patient) => patient.id !== id));
     // 데이터베이스의 외래키 cascade 와 같은 동작을 흉내 낸다
     await removeMockRequestsForPatient(id);
   },
