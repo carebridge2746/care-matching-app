@@ -298,3 +298,120 @@ export type CaregiverRecommendation = {
   caregiver: CaregiverCandidate;
   score: MatchResult;
 };
+
+// --- 매칭과 간병 진행 ---------------------------------------------------------
+
+/**
+ * 매칭 상태.
+ *
+ * 요청 상태(CareRequestStatus)와 값이 겹쳐 보이지만 가리키는 것이 다르다.
+ * 요청은 "이 간병 자리가 지금 어떤 상태인가"이고, 매칭은 "이 사람과의 간병 한 건이
+ * 어떻게 흘러갔는가"다. 취소된 매칭이 남아 있어도 요청은 다시 대기중일 수 있다.
+ */
+export type MatchStatus = 'accepted' | 'inProgress' | 'completed' | 'cancelled';
+
+export const MatchStatusLabels: Record<MatchStatus, string> = {
+  accepted: '매칭 완료',
+  inProgress: '간병 진행중',
+  completed: '간병 종료',
+  cancelled: '취소됨',
+};
+
+/**
+ * 화면 배지(StatusBadge)의 색상 키.
+ * 수락 상태만 이름이 다르고(accepted → matched) 나머지는 요청 상태와 같은 키를 쓴다.
+ */
+export const MatchStatusTones: Record<MatchStatus, CareRequestStatus> = {
+  accepted: 'matched',
+  inProgress: 'inProgress',
+  completed: 'completed',
+  cancelled: 'cancelled',
+};
+
+/** 아직 끝나지 않은 매칭. 시작·종료·취소 버튼은 이때만 보여 준다. */
+export function isMatchLive(status: MatchStatus): boolean {
+  return status === 'accepted' || status === 'inProgress';
+}
+
+/** 매칭의 두 당사자. 취소한 사람을 식별자 대신 이 값으로 기록한다. */
+export type MatchParty = 'guardian' | 'caregiver';
+
+export const MatchPartyLabels: Record<MatchParty, string> = {
+  guardian: '보호자',
+  caregiver: '간병인',
+};
+
+/**
+ * 상대방 정보.
+ *
+ * 연락처는 매칭이 성사되어 있는 동안에만 들어 있다.
+ * 취소된 매칭에서는 이름도 가려진 채로(김OO) 내려온다 —
+ * 가리는 일은 화면이 아니라 데이터가 나오는 지점에서 한다.
+ */
+export type MatchContact = {
+  name: string;
+  phone?: string;
+};
+
+/** 간병인이 매칭 이후에 보는 환자 정보. 특이사항이 여기서 처음 열린다. */
+export type MatchedPatient = PatientSummary & {
+  careNotes?: string;
+};
+
+/** 매칭 화면이 쓰는 간병 조건. 요청 행에서 그대로 가져온다. */
+export type MatchCareSummary = Pick<
+  CareRequest,
+  | 'requestText'
+  | 'careType'
+  | 'region'
+  | 'startDate'
+  | 'endDate'
+  | 'dailyStartTime'
+  | 'dailyEndTime'
+  | 'requiredSkills'
+  | 'budgetPerDay'
+>;
+
+/**
+ * 매칭 한 건.
+ *
+ * 상태가 바뀐 시각을 한 칸에 덮어쓰지 않고 각각 남긴다.
+ * updatedAt 하나만 두면 "언제 시작했는지"를 나중에 되찾을 수 없다.
+ */
+export type Match = {
+  id: string;
+  requestId: string;
+  guardianId: string;
+  caregiverId: string;
+  status: MatchStatus;
+  acceptedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  /** 취소한 쪽. 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다. */
+  cancelledBy?: MatchParty;
+  cancelReason?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 화면이 보는 매칭.
+ *
+ * 목록 한 줄을 그리는 데 필요한 것 — 간병 조건, 환자, 상대방 — 을 매칭에 붙여서 함께 내려준다.
+ * 보호자와 간병인이 같은 모양을 쓰고, 어느 쪽에서 보는지는 `caregiverId`/`guardianId` 를
+ * 로그인한 사용자와 비교해서 정한다.
+ */
+export type CareMatch = Match & {
+  care: MatchCareSummary;
+  patient: MatchedPatient;
+  /** 간병인 쪽 정보. 보호자 화면에서 상대방으로 쓴다. */
+  caregiver: MatchContact;
+  /** 보호자 쪽 정보. 간병인 화면에서 상대방으로 쓴다. */
+  guardian: MatchContact;
+};
+
+/** 로그인한 사용자에게 상대방은 누구인가 */
+export function counterpartOf(match: CareMatch, userId: string): MatchContact {
+  return match.caregiverId === userId ? match.guardian : match.caregiver;
+}

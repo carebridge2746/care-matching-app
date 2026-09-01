@@ -53,14 +53,16 @@ Supabase Edge Function의 secret으로만 설정합니다.
 
 ```
 src/
-├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests)마다
-│                 #   .mock.ts / .supabase.ts 두 구현을 두고 mode.ts 로 고른다
+├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests ·
+│                 #   caregiver · matching · match-history)마다 .mock.ts / .supabase.ts
+│                 #   두 구현을 두고 mode.ts 로 고른다
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
 │   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
 │   └── (app)/        # 로그인 전용 — guardian / caregiver / admin
-│       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성)
-│       └── caregiver/ #   홈 · profile · availability · requests(목록·상세·수락) · accepted
+│       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성) · matches(간병 진행)
+│       └── caregiver/ #   홈 · profile · availability · requests(목록·상세·수락) ·
+│                      #   accepted(수락한 간병과 진행 상황)
 ├── components/
 │   ├── auth/     # 회원가입 유형 선택 카드
 │   ├── care/     # 간병 요청 카드 등 간병 도메인 UI
@@ -92,12 +94,13 @@ src/
 | `/` | 누구나 | 서비스 소개. 로그인 상태면 유형별 홈으로 자동 이동 |
 | `/sign-in`, `/sign-up` | 비로그인 | 로그인 / 회원가입 |
 | `/guardian` | 보호자 | 보호자 홈 |
-| `/guardian/requests/[id]` | 보호자 | 요청 상세와 추천 간병인 |
+| `/guardian/requests/[id]` | 보호자 | 요청 상세와 추천 간병인, 진행 중인 간병 |
+| `/guardian/matches` | 보호자 | 간병 진행 상황과 지난 간병 이력 |
 | `/caregiver` | 간병인 | 간병인 홈 |
 | `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정 |
 | `/caregiver/availability` | 간병인 | 근무 가능 요일·시간대 설정 |
 | `/caregiver/requests` | 간병인 | 대기 중인 간병 요청 목록 |
-| `/caregiver/accepted` | 간병인 | 수락한 간병 목록 |
+| `/caregiver/accepted` | 간병인 | 수락한 간병과 진행 상황(시작·종료·취소) |
 | `/admin` | 관리자 | 관리자 홈 |
 
 접근 제어는 `expo-router`의 `Stack.Protected` guard로만 처리합니다.
@@ -168,8 +171,9 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 | 환자 관리 | `/guardian/patients` | 목록 확인, 삭제(확인 후) |
 | 환자 등록 | `/guardian/patients/new` | 이름·출생연도·성별·질환·거동/인지 상태·특이사항 |
 | 간병 요청 | `/guardian/requests` | 목록과 상태, 대기중이면 삭제·그 외에는 취소 |
-| 요청과 추천 간병인 | `/guardian/requests/[id]` | 요청 조건 확인과 점수순 추천 간병인 |
+| 요청과 추천 간병인 | `/guardian/requests/[id]` | 요청 조건 확인과 점수순 추천 간병인, 진행 중인 간병 |
 | 요청 작성 | `/guardian/requests/new` | 환자 선택, 자연어 원문, 장소·지역·기간·시간대·역량·예산 |
+| 간병 진행 | `/guardian/matches` | 진행 중인 간병(종료·취소)과 지난 간병 이력 |
 
 질환과 간병 역량은 자유 입력이 아니라 `src/lib/care-options.ts`의 목록에서 고릅니다.
 사람마다 다르게 적으면(예: '치매' / '인지저하') 매칭에서 같은 조건으로 볼 수 없기 때문입니다.
@@ -183,7 +187,7 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 ## 간병인 흐름 (Phase 4 · 5)
 
 ```
-프로필·역량 등록 → 가능 시간 설정 → 대기 중인 요청 확인 → 매칭 수락 → 수락한 간병 목록
+프로필·역량 등록 → 가능 시간 설정 → 대기 중인 요청 확인 → 매칭 수락 → 간병 시작 → 종료
 ```
 
 | 화면 | 경로 | 하는 일 |
@@ -193,7 +197,7 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 | 가능 시간 | `/caregiver/availability` | 요일 × 오전/오후/야간 표에서 근무 가능한 칸 선택 |
 | 간병 요청 찾기 | `/caregiver/requests` | 아직 아무도 수락하지 않은 요청 목록 |
 | 요청 상세 | `/caregiver/requests/[id]` | 요청 원문·조건·환자 상태 확인, 매칭 수락 |
-| 수락한 간병 | `/caregiver/accepted` | 매칭이 확정된 간병 목록 |
+| 수락한 간병 | `/caregiver/accepted` | 매칭이 확정된 간병의 진행 상황과 지난 간병 이력 |
 
 홈 화면의 카드 순서가 곧 해야 할 일의 순서입니다. 앞의 두 가지가 비어 있으면 그 카드가
 '아직 등록하지 않았습니다'로 다음에 할 일을 알려 줍니다.
@@ -245,11 +249,14 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 | 환자 이름 | `김OO` (성만) | `김순자` |
 | 나이·성별·거동/인지 상태·질환 | 보임 | 보임 |
 | 요청 원문·기간·시간대·일당·필요 역량 | 보임 | 보임 |
-| 환자 특이사항(`care_notes`), 보호자 정보 | 안 보임 | 안 보임 (Phase 7) |
+| 환자 특이사항(`care_notes`), 보호자 이름·연락처 | 안 보임 | 보임 (`match_details`) |
 
 이름을 가리는 일은 화면이 아니라 데이터가 나오는 지점에서 합니다. 화면에서 가리면 가려지지
 않은 값이 이미 기기까지 내려온 뒤입니다. Mock은 `src/lib/privacy.ts`, Supabase는
 `public.mask_person_name()` 이 같은 규칙을 수행합니다.
+
+환자 특이사항과 보호자 연락처는 요청 뷰가 아니라 매칭 창구(`public.match_details`)에서 열립니다.
+간병을 맡은 사람에게만 필요한 정보이기 때문입니다. 매칭이 취소되면 다시 닫힙니다.
 
 ## 매칭과 추천 (Phase 6)
 
@@ -306,11 +313,85 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 내리면서 이유를 함께 보여 줍니다 — 소리 없이 사라지면 왜 안 보이는지 알 수 없기 때문입니다.
 제외 조건에 걸린 요청은 수락 버튼도 나오지 않습니다.
 
+## 간병 진행과 매칭 이력 (Phase 7)
+
+```
+간병인이 수락 → 매칭 생성(accepted) → 간병인이 출근(in_progress) → 종료(completed)
+                                   └ 취소(cancelled) → 시작 전이면 요청은 다시 대기중으로
+```
+
+수락 이후의 이야기는 `matches` 테이블이 한 줄씩 들고 갑니다. Phase 4까지는 "누가 가져갔는가"를
+요청 행(`care_requests.matched_caregiver_id`)에 적어 두었지만, 그 자리에는 지금 상태만 남고
+무슨 일이 있었는지는 사라집니다. 취소된 매칭도 지우지 않고 이력으로 남기므로, 한 요청에
+매칭이 여러 번 붙을 수 있습니다 — 수락됐다가 취소되고, 다른 간병인이 다시 수락하는 식입니다.
+
+살아 있는 매칭(`accepted`·`in_progress`)은 요청당 언제나 최대 하나입니다. 이 규칙은 화면이
+아니라 부분 유니크 인덱스(`matches_live_per_request_idx`)가 지킵니다.
+
+### 상태를 누가 옮기는가
+
+| 동작 | 누를 수 있는 사람 | 매칭 | 요청 |
+| --- | --- | --- | --- |
+| 수락 | 간병인 | → `accepted` | → `matched` |
+| 간병 시작 | 당사자 간병인 | → `in_progress` | → `in_progress` |
+| 간병 종료 | 보호자 · 간병인 | → `completed` | → `completed` |
+| 취소 (시작 전) | 보호자 · 간병인 | → `cancelled` | → `pending` (다시 매칭 가능) |
+| 취소 (시작 후) | 보호자 · 간병인 | → `cancelled` | → `cancelled` |
+
+간병 시작은 실제로 출근한 사람만 누릅니다. 종료는 양쪽 모두 누를 수 있습니다 — 한쪽만
+누를 수 있게 하면 상대가 앱을 열지 않는 동안 간병이 계속 진행중으로 남습니다.
+
+시작 전 취소는 요청을 다시 대기중으로 돌립니다. 보호자가 요청을 새로 올리지 않아도 다른
+간병인이 그대로 수락할 수 있습니다. 시작한 뒤의 취소는 요청도 함께 닫습니다 — 간병이 중간에
+끊긴 것은 아직 아무도 오지 않은 상태와 다르고, 남은 기간을 그대로 다시 매칭하는 것도 맞지
+않기 때문입니다. 노쇼와 대체 간병인(Phase 10)이 이 취소 기록을 입력으로 씁니다.
+
+### 두 상태를 어떻게 어긋나지 않게 두는가
+
+요청 상태와 매칭 상태는 언제나 함께 움직여야 합니다. 앱이 두 번에 나눠 호출하면 그 사이에
+앱이 꺼졌을 때 한쪽만 바뀐 상태가 남으므로, 두 변경을 데이터베이스 함수 하나에 묶었습니다.
+
+| 창구 | 하는 일 |
+| --- | --- |
+| `public.accept_care_request()` | 요청을 `matched` 로 바꾸고 `matches` 행을 만든다 (한 트랜잭션) |
+| `public.start_care()` | 당사자 간병인만, `accepted` 매칭을 `in_progress` 로 |
+| `public.complete_care()` | 당사자 두 사람, `in_progress` 매칭을 `completed` 로 |
+| `public.cancel_match()` | 당사자 두 사람, 살아 있는 매칭을 `cancelled` 로 |
+| `public.match_details` (뷰) | 당사자가 서로와 간병 내용을 읽는 창구 |
+
+세 함수는 지금 상태에서 할 수 없는 동작이면 예외 대신 `null` 을 돌려줍니다. 목록을 띄워 둔
+사이에 상대가 먼저 상태를 바꾸는 일은 오류가 아니라 흔한 일이므로, 앱은 `null` 을 받으면
+안내를 띄우고 목록을 다시 불러옵니다. 요청 수락(Phase 4)과 같은 방식입니다.
+
+보호자가 요청을 거두는 경로만 함수가 아니라 `care_requests` 를 바로 수정합니다(Phase 3부터).
+그 경로로 매칭이 살아남지 않도록 트리거(`care_requests_cancel_matches`)가 요청이 닫힐 때
+그 위의 매칭도 함께 닫습니다.
+
+### 앱 구조
+
+| 파일 | 역할 |
+| --- | --- |
+| `src/api/match-history.types.ts` | 어댑터 계약 — 목록 조회 두 개, 상태 변경 세 개 |
+| `src/api/match-history.mock.ts` | AsyncStorage 구현. 요청 상태 이동과 가리기 규칙까지 그대로 흉내 낸다 |
+| `src/api/match-history.supabase.ts` | `match_details` 뷰 + 세 함수 호출 |
+| `src/store/use-match-history-store.ts` | 목록·진행 상태. 보호자와 간병인이 같은 저장소를 쓴다 |
+| `src/components/care/match-card.tsx` | 간병 한 건의 상태와 버튼 |
+| `src/components/care/match-cancel-form.tsx` | 취소 확인과 사유 입력 |
+
+매칭을 "만드는" 메서드는 어댑터에 없습니다. 매칭은 요청을 수락할 때만 생기고, 그 일은 이미
+`careRequestsApi.accept()` 가 맡고 있습니다. 둘을 나눠 부르면 수락은 됐는데 매칭 기록이 없는
+요청이 남을 수 있습니다.
+
+보호자와 간병인이 같은 저장소를 쓰는 것도 같은 이유입니다. 요청 목록과 달리 두 사람이 보는
+대상이 같은 간병 한 건이고, 어느 쪽에서 보는지는 `party` 하나로 갈립니다. 무엇을 보여 줄지
+(연락처, 환자 특이사항)는 화면이 아니라 어댑터가 정해서 내려줍니다.
+
 ## 데이터 모델
 
 ```
-profiles(보호자)  1 ──< patients(환자)  1 ──< care_requests(간병 요청)
+profiles(보호자)  1 ──< patients(환자)  1 ──< care_requests(간병 요청)  1 ──< matches(매칭)
 profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availability
+profiles(간병인)  1 ──< matches
 ```
 
 | 테이블 | 내용 |
@@ -320,6 +401,7 @@ profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availabil
 | `care_requests` | 간병 요청. 자연어 원문 + 장소·지역·기간·시간대·필요 역량·예산·상태 |
 | `caregiver_profiles` | 간병인의 성별·경력·자격·역량·간병 장소·근무 지역·희망 일당·자기소개 (`profiles`와 1:1) |
 | `caregiver_availability` | 근무 가능한 요일·시간대. 표의 칸 하나가 한 행 |
+| `matches` | 수락 이후의 간병 한 건. 상태와 수락·시작·종료·취소 시각, 취소한 사람과 사유 |
 
 간병인 프로필은 `profiles.id`를 그대로 기본키로 씁니다. 한 사람당 프로필이 하나뿐이라
 별도 식별자가 필요 없습니다. 가능 시간을 jsonb 한 덩어리가 아니라 칸 단위 행으로 둔 것은
@@ -332,13 +414,24 @@ profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availabil
 
 나이는 저장하지 않고 출생연도만 둡니다. 저장한 나이는 해가 바뀌면 틀린 값이 됩니다.
 
+매칭도 요청과 보호자를 함께 들고 `care_requests(id, guardian_id)`를 한 짝으로 참조합니다.
+덕분에 RLS 조건에서 요청을 조인하지 않고도 당사자를 가려낼 수 있고, 매칭의 보호자가 요청의
+보호자와 어긋나는 상태도 생기지 않습니다. 상태가 바뀐 시각은 한 칸에 덮어쓰지 않고
+(`accepted_at`·`started_at`·`completed_at`·`cancelled_at`) 각각 남깁니다 — `updated_at` 하나만
+두면 "언제 시작했는지"를 나중에 되찾을 수 없습니다.
+
 ### 접근 제어 (RLS)
 
 | 대상 | 지금 가진 권한 |
 | --- | --- |
 | 보호자 | 본인이 등록한 환자·요청만 조회/등록/수정. 삭제는 환자, 그리고 아직 매칭되지 않은(`pending`) 요청만 |
-| 간병인 | `patients`·`care_requests`에 직접 접근 불가 (아래 두 창구로만 다룬다). 본인의 `caregiver_profiles`·`caregiver_availability`는 조회/등록/수정 |
-| 관리자 | `patients`·`care_requests` 접근 불가 |
+| 간병인 | `patients`·`care_requests`에 직접 접근 불가 (아래 창구로만 다룬다). 본인의 `caregiver_profiles`·`caregiver_availability`는 조회/등록/수정 |
+| 당사자 두 사람 | 본인이 낀 `matches`는 **조회만**. 만들고 바꾸는 일은 함수만 할 수 있다 |
+| 관리자 | `patients`·`care_requests`·`matches` 접근 불가 |
+
+요청 행에서 `matched_caregiver_id`·`matched_at`은 앱이 아예 쓸 수 없습니다. RLS 정책은
+"어느 행"만 정하고 "어느 컬럼"은 정하지 못하므로, 이 두 컬럼은 컬럼 권한(`grant update (...)`)으로
+막았습니다. `security definer` 함수는 소유자 권한으로 돌아가므로 영향을 받지 않습니다.
 
 간병인에게는 테이블 정책을 열지 않았습니다. 정책을 열면 "테이블 전체를 읽되 조건에 맞는 행만"이
 되어, 보호자 식별자나 특이사항처럼 아직 보여 줄 이유가 없는 컬럼까지 함께 열리기 때문입니다.
@@ -347,8 +440,10 @@ profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availabil
 | 창구 | 하는 일 |
 | --- | --- |
 | `public.caregiver_care_requests` (뷰) | 대기중 요청과 본인이 수락한 요청만, 보호자 정보 없이 조회 |
-| `public.accept_care_request()` (함수) | 대기중인 요청만 `matched` 로 바꾼다 |
+| `public.accept_care_request()` (함수) | 대기중인 요청만 `matched` 로 바꾸고 `matches` 행을 만든다 |
 | `public.recommendation_candidates()` (함수) | 본인 요청의 추천 후보를 이름 가려서 내보낸다 (보호자용) |
+| `public.match_details` (뷰) | 당사자가 서로와 간병 내용을 읽는다. 취소된 매칭은 연락처를 다시 가린다 |
+| `public.start_care()` · `complete_care()` · `cancel_match()` (함수) | 매칭과 요청 상태를 함께 옮긴다 |
 
 두 창구 모두 호출한 사람이 간병인인지 `public.is_caregiver()` 로 데이터베이스가 직접 확인합니다.
 정책이나 뷰 안에서 `profiles`를 그대로 조회하면 재귀가 생기므로 `security definer` 함수로 감쌌습니다.
@@ -363,11 +458,10 @@ profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availabil
 
 - Phase 6 (매칭): `recommendation_candidates()` 가 후보를 내보냅니다. 간병인이 50명을 넘어가면
   경력이 짧은 쪽부터 잘리므로, 그때는 지역으로도 걸러야 합니다.
-- Phase 7 (매칭 성사): `matches` 테이블을 만들어 수락·거절 이력과 간병 진행 기록을 옮기고,
-  배정된 간병인이 환자 특이사항과 보호자 연락처를 볼 수 있는 정책을 추가합니다.
-  지금은 `care_requests.matched_caregiver_id` 한 컬럼으로 "누가 가져갔는가"만 기록합니다.
-  보호자의 `update` 정책이 아직 컬럼을 가리지 않아 보호자가 이 값을 직접 채울 수 있는데,
-  남의 자료를 건드리지는 못하므로 정보가 새지는 않습니다. 이때 함께 좁힙니다.
+- Phase 8 (후기): `completed` 매칭에만 후기를 달 수 있게 합니다. 매칭 한 건당 한 번씩,
+  보호자와 간병인이 서로에게 남기고, `reviews` 테이블이 `matches.id` 를 가리킵니다.
+- Phase 10 (노쇼): `cancelled` 매칭 중 시작 예정 시각이 지난 뒤에 끊긴 것을 노쇼로 구분하고,
+  같은 요청에 대체 간병인을 추천합니다. `care_requests.status` 의 `no_show` 가 그 자리입니다.
 - Phase 11 (관리자): 관리자 조회 권한을 추가합니다. 정책 안에서 `profiles`를 다시 조회하면
   재귀가 생기므로 JWT 클레임이나 `security definer` 함수로 역할을 판단합니다.
 
@@ -381,7 +475,7 @@ profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availabil
 | 4 | 간병인 요청 목록 · 상세 · 매칭 수락 | 완료 |
 | 5 | 간병인 프로필 · 역량 · 자격 · 가능 시간 | 완료 |
 | 6 | 매칭 알고리즘 · 추천 간병인 (양방향) | 완료 |
-| 7 | 매칭 이력(`matches`) · 간병 진행 | 예정 |
+| 7 | 매칭 이력(`matches`) · 간병 진행 · 취소와 재매칭 | 완료 |
 | 8 | 후기/평가 · 신뢰도 반영 | 예정 |
 | 9 | 교육 · 퀴즈 · 수료 | 예정 |
 | 10 | 노쇼 · 대체 간병인 추천 | 예정 |

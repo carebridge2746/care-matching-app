@@ -5,21 +5,16 @@ import { StyleSheet, View } from 'react-native';
 import { MatchCancelForm, MatchCard } from '@/components/care';
 import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
 import { useAuthStore } from '@/store/use-auth-store';
-import {
-  liveMatches,
-  pastMatches,
-  useMatchHistoryStore,
-} from '@/store/use-match-history-store';
+import { liveMatches, pastMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { Spacing } from '@/theme';
 
 /**
- * 수락한 간병과 진행 상황.
+ * 간병 진행 상황 — 보호자 쪽 화면.
  *
- * 매칭이 확정된 간병이므로 환자 성함과 보호자 연락처가 가려지지 않은 채로 보인다.
- * 위쪽은 지금 해야 할 일(시작·종료·취소)이 있는 간병이고, 아래쪽은 끝난 이력이다.
- * 끝난 간병을 지우지 않는 이유는 후기(Phase 8)가 이 기록을 입구로 삼기 때문이다.
+ * 간병인 화면과 같은 카드를 보되 시작 버튼은 없다. 간병을 시작했다고 표시하는 일은
+ * 실제로 출근한 사람만 할 수 있어야 하기 때문이다. 종료는 양쪽 모두 누를 수 있다.
  */
-export default function AcceptedCareScreen() {
+export default function GuardianMatchesScreen() {
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
 
@@ -28,25 +23,24 @@ export default function AcceptedCareScreen() {
   const updatingId = useMatchHistoryStore((state) => state.updatingId);
   const errorMessage = useMatchHistoryStore((state) => state.errorMessage);
   const load = useMatchHistoryStore((state) => state.load);
-  const start = useMatchHistoryStore((state) => state.start);
   const complete = useMatchHistoryStore((state) => state.complete);
   const cancel = useMatchHistoryStore((state) => state.cancel);
 
   /** 취소 확인을 펼쳐 둔 매칭. 한 번에 하나만 연다. */
   const [cancellingId, setCancellingId] = useState<string | null>(null);
-  const caregiverId = user?.id;
+  const guardianId = user?.id;
 
-  // 보호자가 요청을 거두거나 간병을 종료했을 수 있으므로 화면에 돌아올 때마다 다시 불러온다
+  // 간병인이 간병을 시작하거나 끝냈을 수 있으므로 화면에 돌아올 때마다 다시 불러온다
   useFocusEffect(
     useCallback(() => {
-      if (caregiverId) {
-        void load(caregiverId, 'caregiver');
+      if (guardianId) {
+        void load(guardianId, 'guardian');
       }
-    }, [caregiverId, load])
+    }, [guardianId, load])
   );
 
   if (isLoading && matches.length === 0) {
-    return <LoadingView message="수락한 간병을 불러오는 중입니다" />;
+    return <LoadingView message="간병 진행 상황을 불러오는 중입니다" />;
   }
 
   const live = liveMatches(matches);
@@ -62,10 +56,10 @@ export default function AcceptedCareScreen() {
 
       {matches.length === 0 ? (
         <EmptyState
-          title="아직 수락한 간병이 없습니다"
-          description="대기 중인 요청을 살펴보고 조건이 맞는 간병을 수락해 보세요."
-          actionTitle="간병 요청 찾기"
-          onAction={() => router.replace('/caregiver/requests')}
+          title="아직 매칭된 간병이 없습니다"
+          description="간병 요청을 올리면 조건이 맞는 간병인이 수락할 수 있습니다. 수락되면 여기에서 진행 상황을 확인하실 수 있습니다."
+          actionTitle="간병 요청 보기"
+          onAction={() => router.replace('/guardian/requests')}
         />
       ) : null}
 
@@ -73,7 +67,7 @@ export default function AcceptedCareScreen() {
         <View style={styles.section}>
           <AppText variant="heading">진행 중인 간병</AppText>
           <AppText variant="caption" tone="secondary">
-            출근하시면 간병 시작을 눌러 주세요. 보호자 화면에도 같은 상태가 표시됩니다.
+            간병인이 출근하면 진행중으로 바뀝니다. 간병이 끝나면 종료를 눌러 주세요.
           </AppText>
 
           {live.map((match) =>
@@ -81,31 +75,26 @@ export default function AcceptedCareScreen() {
               <MatchCancelForm
                 key={match.id}
                 match={match}
-                viewer="caregiver"
+                viewer="guardian"
                 busy={updatingId === match.id}
                 onDismiss={() => setCancellingId(null)}
                 onConfirm={(reason) => {
-                  if (!caregiverId) {
+                  if (!guardianId) {
                     return;
                   }
-                  void cancel(match.id, caregiverId, reason).then(() => setCancellingId(null));
+                  void cancel(match.id, guardianId, reason).then(() => setCancellingId(null));
                 }}
               />
             ) : (
               <MatchCard
                 key={match.id}
                 match={match}
-                viewer="caregiver"
+                viewer="guardian"
                 busy={updatingId === match.id}
-                onPress={() => router.push(`/caregiver/requests/${match.requestId}`)}
-                onStart={() => {
-                  if (caregiverId) {
-                    void start(match.id, caregiverId);
-                  }
-                }}
+                onPress={() => router.push(`/guardian/requests/${match.requestId}`)}
                 onComplete={() => {
-                  if (caregiverId) {
-                    void complete(match.id, caregiverId);
+                  if (guardianId) {
+                    void complete(match.id, guardianId);
                   }
                 }}
                 onCancel={() => setCancellingId(match.id)}
@@ -118,8 +107,11 @@ export default function AcceptedCareScreen() {
       {past.length > 0 ? (
         <View style={styles.section}>
           <AppText variant="heading">지난 간병</AppText>
+          <AppText variant="caption" tone="secondary">
+            끝났거나 취소된 간병입니다. 취소된 간병은 간병인의 연락처를 다시 가립니다.
+          </AppText>
           {past.map((match) => (
-            <MatchCard key={match.id} match={match} viewer="caregiver" />
+            <MatchCard key={match.id} match={match} viewer="guardian" />
           ))}
         </View>
       ) : null}

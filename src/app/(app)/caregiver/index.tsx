@@ -9,6 +9,7 @@ import { rankRequestsForCaregiver } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
+import { liveMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -26,12 +27,14 @@ export default function CaregiverHomeScreen() {
   const isSigningOut = useAuthStore((state) => state.isSubmitting);
 
   const available = useCaregiverRequestsStore((state) => state.available);
-  const accepted = useCaregiverRequestsStore((state) => state.accepted);
   const requestsError = useCaregiverRequestsStore((state) => state.errorMessage);
   const loadRequests = useCaregiverRequestsStore((state) => state.load);
 
   const profile = useCaregiverProfileStore((state) => state.profile);
   const loadProfile = useCaregiverProfileStore((state) => state.load);
+
+  const matches = useMatchHistoryStore((state) => state.matches);
+  const loadMatches = useMatchHistoryStore((state) => state.load);
 
   const caregiverId = user?.id;
 
@@ -40,8 +43,9 @@ export default function CaregiverHomeScreen() {
       if (caregiverId) {
         void loadRequests(caregiverId);
         void loadProfile(caregiverId);
+        void loadMatches(caregiverId, 'caregiver');
       }
-    }, [caregiverId, loadProfile, loadRequests])
+    }, [caregiverId, loadMatches, loadProfile, loadRequests])
   );
 
   // 프로필이 있으면 나에게 가장 잘 맞는 요청을, 없으면 가장 최근 요청을 보여 준다
@@ -54,6 +58,8 @@ export default function CaregiverHomeScreen() {
     return null;
   }
 
+  const live = liveMatches(matches);
+  const inProgressCount = live.filter((match) => match.status === 'inProgress').length;
   const availabilitySummary = profile ? summarizeAvailability(profile.availability) : null;
   const isReady = Boolean(profile) && Boolean(availabilitySummary);
 
@@ -124,7 +130,11 @@ export default function CaregiverHomeScreen() {
       <Card onPress={() => router.push('/caregiver/accepted')}>
         <AppText variant="subheading">수락한 간병</AppText>
         <AppText variant="body" tone="secondary">
-          {accepted.length > 0 ? `${accepted.length}건 진행 예정` : '아직 수락한 요청이 없습니다'}
+          {live.length > 0
+            ? `진행 예정 ${live.length - inProgressCount}건 · 간병중 ${inProgressCount}건`
+            : matches.length > 0
+              ? `지난 간병 ${matches.length}건`
+              : '아직 수락한 요청이 없습니다'}
         </AppText>
       </Card>
 

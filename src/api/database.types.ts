@@ -1,4 +1,4 @@
-import type { CareRequestStatus, CareTimeSlot, CareType, CaregiverGenderPreference, CognitionLevel, Gender, MobilityLevel, UserRole, Weekday } from '@/types';
+import type { CareRequestStatus, CareTimeSlot, CareType, CaregiverGenderPreference, CognitionLevel, Gender, MatchStatus, MobilityLevel, UserRole, Weekday } from '@/types';
 
 /**
  * Supabase 테이블 타입 — 데이터베이스와 앱이 만나는 경계.
@@ -131,6 +131,64 @@ export type RecommendationCandidateRow = {
   availability: string[];
 };
 
+/** 매칭 상태의 데이터베이스 표기. 요청 상태와 마찬가지로 snake_case 다. */
+export type MatchStatusRow = 'accepted' | 'in_progress' | 'completed' | 'cancelled';
+
+/**
+ * 수락 이후의 간병 한 건.
+ *
+ * 상태가 바뀐 시각을 한 칸에 덮어쓰지 않고 각각 남긴다.
+ * 취소된 행도 지우지 않고 이력으로 둔다 — 같은 요청에 매칭이 여러 번 붙을 수 있다.
+ */
+export type MatchRow = {
+  id: string;
+  request_id: string;
+  guardian_id: string;
+  caregiver_id: string;
+  status: MatchStatusRow;
+  accepted_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  /** 취소한 사람(profiles.id). 보호자와 간병인 어느 쪽이든 될 수 있다. */
+  cancelled_by: string | null;
+  cancel_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * public.match_details 뷰의 행.
+ *
+ * 매칭에 간병 조건·환자·양쪽 사람을 붙여서 내보낸다.
+ * 환자 특이사항과 연락처는 매칭이 성사되어 있는 동안에만 채워지고,
+ * 취소된 매칭에서는 상대방 이름까지 가려진 채로 내려온다.
+ */
+export type MatchDetailRow = MatchRow & {
+  request_text: string;
+  care_type: CareType;
+  region: string;
+  start_date: string;
+  end_date: string | null;
+  daily_start_time: string | null;
+  daily_end_time: string | null;
+  required_skills: string[];
+  budget_per_day: number | null;
+
+  patient_name: string;
+  patient_birth_year: number;
+  patient_gender: Gender;
+  patient_mobility: MobilityLevel;
+  patient_cognition: CognitionLevel;
+  patient_conditions: string[];
+  patient_care_notes: string | null;
+
+  caregiver_name: string;
+  caregiver_phone: string | null;
+  guardian_name: string;
+  guardian_phone: string | null;
+};
+
 /** 상태 표기 변환 — 저장할 때 */
 export const CareRequestStatusToRow: Record<CareRequestStatus, CareRequestStatusRow> = {
   pending: 'pending',
@@ -149,6 +207,21 @@ export const CareRequestStatusFromRow: Record<CareRequestStatusRow, CareRequestS
   completed: 'completed',
   cancelled: 'cancelled',
   no_show: 'noShow',
+};
+
+/** 매칭 상태 표기 변환 */
+export const MatchStatusToRow: Record<MatchStatus, MatchStatusRow> = {
+  accepted: 'accepted',
+  inProgress: 'in_progress',
+  completed: 'completed',
+  cancelled: 'cancelled',
+};
+
+export const MatchStatusFromRow: Record<MatchStatusRow, MatchStatus> = {
+  accepted: 'accepted',
+  in_progress: 'inProgress',
+  completed: 'completed',
+  cancelled: 'cancelled',
 };
 
 /** 서버가 채우는 값(id, 시각)과 기본값이 있는 컬럼은 넣지 않아도 된다 */
@@ -221,11 +294,28 @@ export type Database = {
         Update: Partial<CaregiverAvailabilityRow>;
         Relationships: [];
       };
+      /**
+       * 앱은 이 테이블을 읽기만 한다.
+       * 만들고 바꾸는 일은 accept_care_request / start_care / complete_care / cancel_match 만 한다
+       * (테이블에 insert·update 정책이 없다). Insert·Update 타입은 형식을 맞추기 위한 것이다.
+       */
+      matches: {
+        Row: MatchRow;
+        Insert: Omit<MatchRow, Generated | 'accepted_at' | 'status'> &
+          Partial<Pick<MatchRow, Generated | 'accepted_at' | 'status'>>;
+        Update: Partial<MatchRow>;
+        Relationships: [];
+      };
     };
     Views: {
       /** 간병인이 읽을 수 있는 유일한 요청 창구. 대기중 요청과 본인이 수락한 요청만 담긴다. */
       caregiver_care_requests: {
         Row: CaregiverCareRequestRow;
+        Relationships: [];
+      };
+      /** 매칭 당사자가 서로와 간병 내용을 읽는 창구. 본인이 낀 매칭만 담긴다. */
+      match_details: {
+        Row: MatchDetailRow;
         Relationships: [];
       };
     };
@@ -242,6 +332,25 @@ export type Database = {
       recommendation_candidates: {
         Args: { request_id: string };
         Returns: RecommendationCandidateRow[];
+      };
+      /**
+       * 매칭 상태를 옮기는 세 함수.
+       *
+       * 모두 바뀐 매칭의 id를 돌려주고, 지금 상태에서 할 수 없는 동작이면 null을 돌려준다.
+       * 목록을 띄워 둔 사이에 상대가 먼저 상태를 바꾸는 일은 오류가 아니라 흔한 일이므로,
+       * 예외 대신 null로 알려서 앱이 목록을 다시 불러오게 한다.
+       */
+      start_care: {
+        Args: { match_id: string };
+        Returns: string | null;
+      };
+      complete_care: {
+        Args: { match_id: string };
+        Returns: string | null;
+      };
+      cancel_match: {
+        Args: { match_id: string; reason?: string | null };
+        Returns: string | null;
       };
     };
     Enums: Record<string, never>;

@@ -1,5 +1,10 @@
 import { ApiError } from '@/api/api-error';
 import type { CareRequestInput, CareRequestsAdapter } from '@/api/care-requests.types';
+import {
+  cancelMockMatchesForRequest,
+  createMockMatch,
+  removeMockMatchesForRequests,
+} from '@/api/match-history.mock';
 import { delay, loadCareRequests, loadPatients, saveCareRequests } from '@/api/mock-store';
 import { maskPersonName } from '@/lib/privacy';
 import type { CareRequest, CaregiverCareRequest, Patient, PatientSummary } from '@/types';
@@ -126,6 +131,8 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
       updatedAt: new Date().toISOString(),
     };
     await saveCareRequests(all.map((request) => (request.id === id ? cancelled : request)));
+    // 이미 간병인이 붙어 있었다면 그 매칭도 함께 끝난다. 기록은 취소 이력으로 남긴다.
+    await cancelMockMatchesForRequest(id, target.guardianId);
     return cancelled;
   },
 
@@ -143,6 +150,9 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
     }
 
     await saveCareRequests(all.filter((request) => request.id !== id));
+    // 대기중 요청에도 지난 매칭 이력이 붙어 있을 수 있다 (수락됐다가 시작 전에 취소된 경우).
+    // Supabase 쪽에서는 외래키 cascade 가 같은 일을 한다.
+    await removeMockMatchesForRequests([id]);
   },
 
   async listAvailable(caregiverId) {
@@ -186,6 +196,9 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
       updatedAt: now,
     };
     await saveCareRequests(all.map((request) => (request.id === id ? matched : request)));
+    // 수락과 매칭 기록은 함께 남아야 한다.
+    // Supabase 쪽에서는 accept_care_request() 안에서 한 트랜잭션으로 일어난다.
+    await createMockMatch(matched, caregiverId, now);
 
     const patients = await loadPatients();
     const patient = patients.find((item) => item.id === matched.patientId);
@@ -204,5 +217,9 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
  */
 export async function removeMockRequestsForPatient(patientId: string): Promise<void> {
   const all = await loadCareRequests();
+  const removed = all.filter((request) => request.patientId === patientId);
+
   await saveCareRequests(all.filter((request) => request.patientId !== patientId));
+  // 요청이 사라지면 그 요청에 달린 매칭 기록도 함께 사라진다
+  await removeMockMatchesForRequests(removed.map((request) => request.id));
 }

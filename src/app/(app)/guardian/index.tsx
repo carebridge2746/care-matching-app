@@ -6,6 +6,7 @@ import { AppButton, AppText, Card, Screen, StatusBadge } from '@/components/comm
 import { formatPeriod } from '@/lib/date';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCareRequestsStore } from '@/store/use-care-requests-store';
+import { liveMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { usePatientsStore } from '@/store/use-patients-store';
 import { Spacing } from '@/theme';
 import { CareTypeLabels } from '@/types';
@@ -25,10 +26,13 @@ export default function GuardianHomeScreen() {
   const loadPatients = usePatientsStore((state) => state.load);
   const requests = useCareRequestsStore((state) => state.requests);
   const loadRequests = useCareRequestsStore((state) => state.load);
+  const matches = useMatchHistoryStore((state) => state.matches);
+  const loadMatches = useMatchHistoryStore((state) => state.load);
 
   const guardianId = user?.id;
 
-  // 화면에 돌아올 때마다 다시 불러온다. 간병인이 요청을 수락하면 상태가 바뀌기 때문이다.
+  // 화면에 돌아올 때마다 다시 불러온다. 간병인이 요청을 수락하거나
+  // 간병을 시작·종료하면 상태가 바뀌기 때문이다.
   useFocusEffect(
     useCallback(() => {
       if (!guardianId) {
@@ -36,7 +40,8 @@ export default function GuardianHomeScreen() {
       }
       void loadPatients(guardianId);
       void loadRequests(guardianId);
-    }, [guardianId, loadPatients, loadRequests])
+      void loadMatches(guardianId, 'guardian');
+    }, [guardianId, loadMatches, loadPatients, loadRequests])
   );
 
   if (!user) {
@@ -45,6 +50,8 @@ export default function GuardianHomeScreen() {
 
   const pendingCount = requests.filter((request) => request.status === 'pending').length;
   const matchedCount = requests.filter((request) => request.matchedCaregiverId).length;
+  const live = liveMatches(matches);
+  const inProgressCount = live.filter((match) => match.status === 'inProgress').length;
   const recentRequests = requests.slice(0, 2);
   const hasPatients = patients.length > 0;
 
@@ -91,6 +98,17 @@ export default function GuardianHomeScreen() {
           {requests.length > 0
             ? `${requests.length}건 · 대기중 ${pendingCount}건 · 매칭 완료 ${matchedCount}건`
             : '아직 올린 요청이 없습니다'}
+        </AppText>
+      </Card>
+
+      <Card onPress={() => router.push('/guardian/matches')}>
+        <AppText variant="subheading">간병 진행</AppText>
+        <AppText variant="body" tone="secondary">
+          {live.length > 0
+            ? `진행 예정 ${live.length - inProgressCount}건 · 간병중 ${inProgressCount}건`
+            : matches.length > 0
+              ? `지난 간병 ${matches.length}건`
+              : '아직 매칭된 간병이 없습니다'}
         </AppText>
       </Card>
 

@@ -687,3 +687,443 @@ comment on function public.recommendation_candidates(uuid) is '요청의 추천 
 
 revoke all on function public.recommendation_candidates(uuid) from public, anon;
 grant execute on function public.recommendation_candidates(uuid) to authenticated;
+
+-- ===========================================================================
+-- Phase 7 — 매칭 이력과 간병 진행
+-- ===========================================================================
+--
+-- Phase 4까지는 "이 요청을 누가 가져갔는가"를 요청 행(care_requests.matched_caregiver_id)에
+-- 함께 적어 두었다. 한 요청에 간병인이 한 번만 붙는 동안에는 그것으로 충분했지만,
+-- 실제 간병은 수락 이후에도 계속 움직인다 — 시작하고, 끝나고, 중간에 그만두기도 한다.
+-- 요청 행 하나에 이 흐름을 모두 눌러 담으면 "지금 상태"만 남고 "무슨 일이 있었는지"는 사라진다.
+--
+-- 그래서 수락 이후의 이야기는 matches 테이블이 한 줄씩 따로 들고 간다.
+--   요청 1건 ── N matches (수락할 때마다 한 줄. 취소되면 그 줄은 이력으로 남는다)
+--
+-- 살아 있는 매칭(accepted·in_progress)은 요청당 언제나 최대 한 줄이며,
+-- 이 규칙은 아래 부분 유니크 인덱스가 지킨다. 취소된 줄은 몇 개든 쌓일 수 있다.
+--
+-- care_requests.status 와 matches.status 는 아래 함수들이 함께 옮긴다.
+--   수락      accepted    → 요청 matched
+--   간병 시작  in_progress → 요청 in_progress
+--   간병 종료  completed   → 요청 completed
+--   취소      cancelled   → 시작 전이면 요청 pending 으로 되돌리고(다시 매칭 가능),
+--                          시작한 뒤면 요청 cancelled 로 닫는다
+
+-- 18) 요청을 (요청, 보호자) 짝으로 참조하기 ----------------------------------
+--
+-- matches 가 보호자를 함께 들고 있어야 RLS 조건에서 요청을 조인하지 않고 판정할 수 있다.
+-- 다만 그 값이 요청의 보호자와 어긋나면 안 되므로, patients ← care_requests 와 같은
+-- 복합 외래키를 쓴다. 그러려면 참조 대상에 (id, guardian_id) 유니크 제약이 있어야 한다.
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'care_requests_id_guardian_key'
+  ) then
+    alter table public.care_requests
+      add constraint care_requests_id_guardian_key unique (id, guardian_id);
+  end if;
+end $$;
+
+-- 19) 매칭 -------------------------------------------------------------------
+
+create table if not exists public.matches (
+  id uuid primary key default gen_random_uuid(),
+  request_id uuid not null,
+  guardian_id uuid not null references public.profiles (id) on delete cascade,
+  caregiver_id uuid not null references public.profiles (id) on delete cascade,
+
+  status text not null default 'accepted'
+    check (status in ('accepted', 'in_progress', 'completed', 'cancelled')),
+
+  -- 상태가 바뀐 시각을 덮어쓰지 않고 각각 남긴다.
+  -- updated_at 하나만 두면 "언제 시작했는지"를 나중에 되찾을 수 없다.
+  accepted_at timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  cancelled_at timestamptz,
+
+  -- 누가 그만두었는지. 보호자와 간병인 어느 쪽이든 취소할 수 있으므로 함께 적는다.
+  cancelled_by uuid references public.profiles (id) on delete set null,
+  cancel_reason text,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  -- 남의 요청으로 매칭을 만들 수 없고, guardian_id 가 요청과 어긋나지도 않는다
+  constraint matches_request_fkey foreign key (request_id, guardian_id)
+    references public.care_requests (id, guardian_id) on delete cascade,
+
+  -- 상태와 시각이 어긋난 행을 막는다 (진행중인데 시작 시각이 없는 행 등)
+  constraint matches_status_time_valid check (
+    (status <> 'in_progress' or started_at is not null)
+    and (status <> 'completed' or completed_at is not null)
+    and (status <> 'cancelled' or cancelled_at is not null)
+    and (cancelled_at is null) = (cancelled_by is null)
+  )
+);
+
+comment on table public.matches is '수락 이후의 간병 한 건. 취소되면 그 행은 이력으로 남고 요청은 새 매칭을 받을 수 있다.';
+comment on column public.matches.status is 'accepted 수락됨 / in_progress 간병중 / completed 종료 / cancelled 취소';
+comment on column public.matches.cancelled_by is '취소한 사람(profiles.id). 보호자와 간병인 어느 쪽이든 될 수 있다.';
+
+-- 살아 있는 매칭은 요청당 하나뿐이다.
+-- 두 간병인이 동시에 수락해도 두 번째 insert 가 여기서 막힌다 —
+-- accept_care_request() 의 status = 'pending' 조건과 겹치는 이중 잠금이다.
+create unique index if not exists matches_live_per_request_idx
+  on public.matches (request_id)
+  where status in ('accepted', 'in_progress');
+
+create index if not exists matches_caregiver_id_idx
+  on public.matches (caregiver_id, accepted_at desc);
+create index if not exists matches_guardian_id_idx
+  on public.matches (guardian_id, accepted_at desc);
+
+drop trigger if exists matches_set_updated_at on public.matches;
+create trigger matches_set_updated_at
+  before update on public.matches
+  for each row execute function public.set_updated_at();
+
+alter table public.matches enable row level security;
+
+-- 읽기만 정책으로 연다. 당사자 두 사람만 자기 매칭을 본다.
+drop policy if exists "당사자 매칭 조회" on public.matches;
+create policy "당사자 매칭 조회"
+  on public.matches for select
+  to authenticated
+  using (
+    (select auth.uid()) = guardian_id
+    or (select auth.uid()) = caregiver_id
+  );
+
+-- insert/update/delete 정책은 두지 않는다. 정책이 없으면 거부다.
+-- 상태를 바꾸는 일은 아래 함수 세 개만 할 수 있다. 앱이 직접 update 하도록 열어 두면
+-- "간병을 시작하면 요청도 진행중으로 바뀐다" 같은 규칙이 화면 쪽으로 새어 나가고,
+-- 화면이 하나 늘어날 때마다 같은 규칙을 다시 적게 된다.
+
+-- 20) 요청 행에서 앱이 건드릴 수 없는 컬럼 ------------------------------------
+--
+-- Phase 4에 남겨 둔 구멍을 여기서 막는다. 그때는 보호자의 update 정책이 컬럼을 가리지 않아서
+-- 보호자가 자기 요청의 matched_caregiver_id 를 직접 채워 넣을 수 있었다.
+-- 정책(RLS)은 "어느 행"만 정하고 "어느 컬럼"은 정하지 못하므로 컬럼 권한으로 막는다.
+-- security definer 함수는 소유자 권한으로 돌아가므로 아래 회수의 영향을 받지 않는다.
+
+revoke update on public.care_requests from authenticated;
+grant update (
+  request_text,
+  care_type,
+  region,
+  start_date,
+  end_date,
+  daily_start_time,
+  daily_end_time,
+  required_skills,
+  preferred_caregiver_gender,
+  budget_per_day,
+  status
+) on public.care_requests to authenticated;
+
+-- status 는 아직 열어 둔다. 보호자가 요청을 거두는 취소가 앱에서 바로 update 로 나간다.
+-- 매칭이 살아 있는 동안의 상태 이동은 아래 함수들이 맡으므로, 보호자가 status 를
+-- 임의로 적더라도 matches 쪽 기록은 어긋나지 않는다.
+
+-- 21) 매칭 상세 뷰 ------------------------------------------------------------
+--
+-- 매칭이 성사되면 서로를 알아야 간병이 시작된다. 이 뷰가 그 창구다.
+-- 여기서 처음으로 간병인이 환자 특이사항(care_notes)과 보호자 연락처를 보고,
+-- 보호자도 간병인의 이름과 연락처를 가려지지 않은 채로 본다.
+--
+-- 취소된 매칭은 다시 닫는다. 성사되지 않은 만남의 연락처와 특이사항을
+-- 이력이라는 이유로 계속 열어 둘 까닭이 없다. 다만 자기 자신의 자료는 언제나 보인다.
+
+create or replace view public.match_details
+with (security_invoker = false) as
+select
+  m.id,
+  m.request_id,
+  m.guardian_id,
+  m.caregiver_id,
+  m.status,
+  m.accepted_at,
+  m.started_at,
+  m.completed_at,
+  m.cancelled_at,
+  m.cancelled_by,
+  m.cancel_reason,
+  m.created_at,
+  m.updated_at,
+
+  r.request_text,
+  r.care_type,
+  r.region,
+  r.start_date,
+  r.end_date,
+  r.daily_start_time,
+  r.daily_end_time,
+  r.required_skills,
+  r.budget_per_day,
+
+  case when v.viewer = m.guardian_id or v.engaged then pt.name
+       else public.mask_person_name(pt.name) end as patient_name,
+  pt.birth_year as patient_birth_year,
+  pt.gender as patient_gender,
+  pt.mobility as patient_mobility,
+  pt.cognition as patient_cognition,
+  pt.conditions as patient_conditions,
+  case when v.viewer = m.guardian_id or v.engaged then pt.care_notes end as patient_care_notes,
+
+  case when v.viewer = m.caregiver_id or v.engaged then cg.name
+       else public.mask_person_name(cg.name) end as caregiver_name,
+  case when v.viewer = m.caregiver_id or v.engaged then cg.phone end as caregiver_phone,
+
+  case when v.viewer = m.guardian_id or v.engaged then gu.name
+       else public.mask_person_name(gu.name) end as guardian_name,
+  case when v.viewer = m.guardian_id or v.engaged then gu.phone end as guardian_phone
+from public.matches m
+join public.care_requests r on r.id = m.request_id
+join public.patients pt on pt.id = r.patient_id
+join public.profiles cg on cg.id = m.caregiver_id
+join public.profiles gu on gu.id = m.guardian_id
+-- 같은 판정을 열 개 가까이 되풀이하지 않도록 한 번만 계산해 둔다.
+-- engaged = 취소되지 않은 매칭. 자기 자신의 자료는 engaged 와 무관하게 보인다.
+cross join lateral (
+  select (select auth.uid()) as viewer, m.status <> 'cancelled' as engaged
+) v
+where m.guardian_id = v.viewer or m.caregiver_id = v.viewer;
+
+comment on view public.match_details is '매칭 당사자가 서로와 간병 내용을 읽는 창구. 취소된 매칭은 연락처와 특이사항을 다시 가린다.';
+
+revoke all on public.match_details from anon;
+grant select on public.match_details to authenticated;
+
+-- 22) 수락 — 요청 상태와 매칭 행을 함께 만든다 ---------------------------------
+--
+-- Phase 4의 함수를 그대로 이어받되, 요청을 matched 로 바꾸는 일과 matches 행을 만드는 일을
+-- 한 트랜잭션에 둔다. 둘을 앱에서 두 번에 나눠 부르면 앞만 성공한 요청이 남을 수 있다.
+-- 돌려주는 값은 예전과 같은 요청 id 다 — 앱이 이미 이 값으로 화면을 다시 읽고 있다.
+
+create or replace function public.accept_care_request(request_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  caregiver uuid := (select auth.uid());
+  accepted public.care_requests%rowtype;
+begin
+  if caregiver is null or not public.is_caregiver() then
+    raise exception '간병인만 요청을 수락할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.care_requests r
+     set status = 'matched',
+         matched_caregiver_id = caregiver,
+         matched_at = now()
+   where r.id = request_id
+     and r.status = 'pending'
+  returning * into accepted;
+
+  -- 없는 요청과 이미 넘어간 요청을 구분하지 않는다 — 구분해서 알려 주면
+  -- 아무 uuid나 넣어 보며 요청의 존재 여부를 알아낼 수 있다.
+  if accepted.id is null then
+    return null;
+  end if;
+
+  insert into public.matches (request_id, guardian_id, caregiver_id, status, accepted_at)
+  values (accepted.id, accepted.guardian_id, caregiver, 'accepted', accepted.matched_at);
+
+  return accepted.id;
+end;
+$$;
+
+comment on function public.accept_care_request(uuid) is '대기중 요청을 수락해 matched 로 바꾸고 matches 행을 만든다. 이미 넘어간 요청이면 null 을 돌려준다.';
+
+revoke all on function public.accept_care_request(uuid) from public, anon;
+grant execute on function public.accept_care_request(uuid) to authenticated;
+
+-- 23) 간병 시작 ---------------------------------------------------------------
+--
+-- 출근한 사람이 누르는 버튼이다. 그래서 당사자 간병인만 부를 수 있다.
+-- 아래 세 함수 모두 조건에 맞는 행이 없으면 예외 대신 null 을 돌려준다.
+-- 화면이 목록을 띄워 둔 사이에 상태가 바뀌는 일은 오류가 아니라 흔한 일이고,
+-- 앱은 null 을 받으면 목록을 다시 불러오면 된다.
+
+create or replace function public.start_care(match_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  started public.matches%rowtype;
+begin
+  update public.matches m
+     set status = 'in_progress',
+         started_at = now()
+   where m.id = match_id
+     and m.caregiver_id = actor
+     and m.status = 'accepted'
+  returning * into started;
+
+  if started.id is null then
+    return null;
+  end if;
+
+  update public.care_requests r
+     set status = 'in_progress'
+   where r.id = started.request_id;
+
+  return started.id;
+end;
+$$;
+
+comment on function public.start_care(uuid) is '수락한 간병을 진행중으로 바꾼다. 당사자 간병인만, accepted 상태에서만 된다.';
+
+-- 24) 간병 종료 ---------------------------------------------------------------
+--
+-- 보호자와 간병인 어느 쪽이든 끝났다고 표시할 수 있다.
+-- 한쪽만 누를 수 있게 하면 상대가 앱을 열지 않는 동안 간병이 계속 진행중으로 남는다.
+-- 후기·평가(Phase 8)는 completed 가 된 매칭을 입구로 삼는다.
+
+create or replace function public.complete_care(match_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  finished public.matches%rowtype;
+begin
+  update public.matches m
+     set status = 'completed',
+         completed_at = now()
+   where m.id = match_id
+     and (m.caregiver_id = actor or m.guardian_id = actor)
+     and m.status = 'in_progress'
+  returning * into finished;
+
+  if finished.id is null then
+    return null;
+  end if;
+
+  update public.care_requests r
+     set status = 'completed'
+   where r.id = finished.request_id;
+
+  return finished.id;
+end;
+$$;
+
+comment on function public.complete_care(uuid) is '진행중인 간병을 종료로 바꾼다. 보호자와 간병인 어느 쪽이든 부를 수 있다.';
+
+-- 25) 매칭 취소 ---------------------------------------------------------------
+--
+-- 시작 전(accepted)에 취소하면 요청은 다시 대기중으로 돌아간다. 보호자는 새 요청을
+-- 올리지 않아도 되고, 다른 간병인이 그대로 수락할 수 있다. 이때 matched_caregiver_id 를
+-- 반드시 비운다 — 비우지 않으면 care_requests_matched_state_valid 제약에 걸린다.
+--
+-- 시작한 뒤(in_progress)에 취소하면 요청을 다시 열지 않고 닫는다. 간병이 중간에 끊긴 것은
+-- 아직 아무도 오지 않은 상태와 다르고, 남은 기간을 그대로 다시 매칭하는 것도 맞지 않는다.
+-- 노쇼와 대체 간병인 추천은 Phase 10에서 이 취소 기록을 입력으로 쓴다.
+
+create or replace function public.cancel_match(match_id uuid, reason text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  cancelled public.matches%rowtype;
+  was_started boolean;
+begin
+  update public.matches m
+     set status = 'cancelled',
+         cancelled_at = now(),
+         cancelled_by = actor,
+         cancel_reason = nullif(trim(reason), '')
+   where m.id = match_id
+     and (m.caregiver_id = actor or m.guardian_id = actor)
+     and m.status in ('accepted', 'in_progress')
+  returning * into cancelled;
+
+  if cancelled.id is null then
+    return null;
+  end if;
+
+  was_started := cancelled.started_at is not null;
+
+  update public.care_requests r
+     set status = case when was_started then 'cancelled' else 'pending' end,
+         matched_caregiver_id = case when was_started then r.matched_caregiver_id else null end,
+         matched_at = case when was_started then r.matched_at else null end
+   where r.id = cancelled.request_id;
+
+  return cancelled.id;
+end;
+$$;
+
+comment on function public.cancel_match(uuid, text) is '살아 있는 매칭을 취소한다. 시작 전이면 요청을 다시 대기중으로 되돌리고, 시작한 뒤면 요청을 닫는다.';
+
+revoke all on function public.start_care(uuid) from public, anon;
+grant execute on function public.start_care(uuid) to authenticated;
+
+revoke all on function public.complete_care(uuid) from public, anon;
+grant execute on function public.complete_care(uuid) to authenticated;
+
+revoke all on function public.cancel_match(uuid, text) from public, anon;
+grant execute on function public.cancel_match(uuid, text) to authenticated;
+
+-- 26) 보호자가 요청을 거둘 때 -------------------------------------------------
+--
+-- 보호자의 요청 취소는 함수가 아니라 care_requests 를 바로 update 하는 경로로 들어온다
+-- (Phase 3부터 그랬고, 요청을 거두는 일 자체는 매칭과 상관없이 할 수 있어야 한다).
+-- 그 경로로는 matches 가 그대로 남아, 간병인 화면에는 살아 있는 간병으로 보이게 된다.
+-- 요청이 닫히면 그 위의 매칭도 함께 닫히도록 트리거로 잇는다.
+--
+-- 앱이 두 번에 나눠 호출하게 하지 않는 이유는, 그 사이에 앱이 꺼지면
+-- 요청은 취소됐는데 매칭은 살아 있는 상태가 그대로 남기 때문이다.
+
+create or replace function public.cancel_matches_on_request_cancel()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.status = 'cancelled' and old.status is distinct from 'cancelled' then
+    update public.matches m
+       set status = 'cancelled',
+           cancelled_at = now(),
+           -- 취소한 사람을 알 수 없는 경로(관리 작업 등)라면 보호자가 거둔 것으로 본다
+           cancelled_by = coalesce((select auth.uid()), new.guardian_id),
+           cancel_reason = coalesce(m.cancel_reason, '보호자가 요청을 취소했습니다.')
+     where m.request_id = new.id
+       and m.status in ('accepted', 'in_progress');
+  end if;
+
+  return new;
+end;
+$$;
+
+comment on function public.cancel_matches_on_request_cancel() is '요청이 취소되면 그 요청에 살아 있던 매칭도 함께 취소한다.';
+
+-- cancel_match() 가 요청을 닫는 경우에도 이 트리거가 돌지만, 그때 매칭은 이미 cancelled 이라
+-- where 절에 걸리지 않는다. 서로를 다시 부르지 않는다.
+drop trigger if exists care_requests_cancel_matches on public.care_requests;
+create trigger care_requests_cancel_matches
+  after update of status on public.care_requests
+  for each row execute function public.cancel_matches_on_request_cancel();
+
+-- 27) 아직 열지 않은 것 -------------------------------------------------------
+--
+--   Phase 8 (후기): completed 매칭에만 후기를 달 수 있게 한다. 매칭 한 건당 한 번씩,
+--     보호자와 간병인이 서로에게. reviews 테이블이 matches.id 를 가리킨다.
+--   Phase 10 (노쇼): cancelled 매칭 중 시작 예정 시각이 지난 뒤에 끊긴 것을 노쇼로 구분하고,
+--     같은 요청에 대체 간병인을 추천한다. care_requests.status 의 no_show 가 그 자리다.
+--   Phase 11 (관리자): 관리자가 모든 매칭을 조회한다. 정책 안에서 profiles 를 다시 조회하면
+--     재귀가 생기므로 is_caregiver() 처럼 security definer 함수로 감싼다.
