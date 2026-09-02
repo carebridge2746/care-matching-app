@@ -7,3 +7,5 @@ export { CaregiverRequestCard, type CaregiverRequestCardProps } from './caregive
 export { MatchCancelForm, type MatchCancelFormProps } from './match-cancel-form';
 export { MatchCard, type MatchCardProps } from './match-card';
 export { MatchScoreBadge, type MatchScoreBadgeProps } from './match-score-badge';
+export { ReviewForm, type ReviewFormProps } from './review-form';
+export { ReviewList, type ReviewListProps } from './review-list';

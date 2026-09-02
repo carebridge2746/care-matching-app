@@ -27,6 +27,10 @@ export type MatchCardProps = {
   onStart?: () => void;
   onComplete?: () => void;
   onCancel?: () => void;
+  /** 끝난 간병에만 쓴다. 값을 주면 후기 작성 버튼이 보인다. */
+  onReview?: () => void;
+  /** 이 간병에 이미 후기를 남겼는지. 남겼으면 버튼 대신 그 사실을 보여 준다. */
+  reviewed?: boolean;
   /** 값을 주면 카드 전체를 눌러 상세로 갈 수 있다 */
   onPress?: () => void;
 };
@@ -47,6 +51,8 @@ export function MatchCard({
   onStart,
   onComplete,
   onCancel,
+  onReview,
+  reviewed = false,
   onPress,
 }: MatchCardProps) {
   const { patient, care } = match;
@@ -134,6 +140,17 @@ export function MatchCard({
             />
           ) : null}
         </View>
+      ) : null}
+
+      {/* 후기는 끝난 간병에만 남길 수 있다. 취소된 간병에는 평가할 간병이 없었다. */}
+      {match.status === 'completed' ? (
+        reviewed ? (
+          <AppText variant="caption" tone="success">
+            후기를 남기셨습니다
+          </AppText>
+        ) : onReview ? (
+          <AppButton title="후기 남기기" variant="secondary" disabled={busy} onPress={onReview} />
+        ) : null
       ) : null}
     </Card>
   );

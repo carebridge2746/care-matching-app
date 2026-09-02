@@ -1,5 +1,5 @@
 import { readJson, writeJson } from '@/lib/storage';
-import type { CareRequest, CaregiverProfile, Match, Patient } from '@/types';
+import type { CareRequest, CaregiverProfile, Match, Patient, Review } from '@/types';
 
 /**
  * Mock 모드의 로컬 저장소.
@@ -17,6 +17,7 @@ const PatientsKey = 'careapp.mock.patients';
 const CareRequestsKey = 'careapp.mock.care-requests';
 const CaregiverProfilesKey = 'careapp.mock.caregiver-profiles';
 const MatchesKey = 'careapp.mock.matches';
+const ReviewsKey = 'careapp.mock.reviews';
 
 /** 어댑터가 흉내 내는 네트워크 지연. 화면의 로딩 표시까지 확인하기 위한 값이다. */
 export const NetworkDelayMs = 300;
@@ -54,6 +55,20 @@ export async function loadMatches(): Promise<Match[]> {
 
 export async function saveMatches(matches: Match[]): Promise<void> {
   await writeJson(MatchesKey, matches);
+}
+
+/**
+ * 후기.
+ *
+ * 평균 별점은 함께 저장하지 않는다. 읽을 때 세면 언제나 맞고,
+ * 저장해 두면 후기가 늘어날 때마다 두 값을 함께 고쳐야 한다 — Supabase 쪽도 뷰로 센다.
+ */
+export async function loadReviews(): Promise<Review[]> {
+  return (await readJson<Review[]>(ReviewsKey)) ?? [];
+}
+
+export async function saveReviews(reviews: Review[]): Promise<void> {
+  await writeJson(ReviewsKey, reviews);
 }
 
 export async function loadCaregiverProfiles(): Promise<CaregiverProfile[]> {

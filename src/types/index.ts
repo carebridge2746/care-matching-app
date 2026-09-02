@@ -273,6 +273,11 @@ export type CaregiverCandidate = {
   minDailyWage?: number;
   introduction?: string;
   availability: AvailabilitySlot[];
+  /**
+   * 지금까지 받은 평가. 화면에 보여 주기만 하고 매칭 점수에는 넣지 않는다 —
+   * 별점을 배점에 섞으면 후기가 없는 새 간병인이 계속 아래로 밀려 첫 매칭을 잡지 못한다.
+   */
+  rating: UserRating;
 };
 
 /** 점수 한 줄. 총점만 보여 주면 왜 그 사람이 위에 있는지 알 수 없다. */
@@ -501,4 +506,78 @@ export function hasAiConditions(conditions: AiCareConditions): boolean {
       budgetPerDay !== undefined ||
       additionalNotes
   );
+}
+
+// --- 후기와 신뢰도 -------------------------------------------------------------
+
+/** 별점의 범위. 화면과 저장소가 같은 값을 보도록 한 곳에 둔다. */
+export const MinRating = 1;
+export const MaxRating = 5;
+
+/** 별점 하나하나에 붙는 뜻. 색이나 개수만으로 고르게 하지 않는다. */
+export const RatingLabels: Record<number, string> = {
+  1: '많이 아쉬웠습니다',
+  2: '아쉬웠습니다',
+  3: '보통이었습니다',
+  4: '좋았습니다',
+  5: '매우 좋았습니다',
+};
+
+/**
+ * 내가 쓴 후기, 또는 내가 받은 후기의 원본.
+ *
+ * 당사자 두 사람만 이 모양으로 읽는다. 남에게 보여 줄 때는 작성자를 가린
+ * PublicReview 를 쓴다.
+ */
+export type Review = {
+  id: string;
+  /** 후기는 사람이 아니라 함께한 간병 한 건에 달린다 */
+  matchId: string;
+  reviewerId: string;
+  revieweeId: string;
+  /** 1~5 */
+  rating: number;
+  comment?: string;
+  createdAt: string;
+};
+
+/**
+ * 남에게 보여 주는 후기.
+ *
+ * 작성자 이름은 성만 남기고(김OO), 어느 간병 건이었는지는 담지 않는다 —
+ * 매칭을 되짚으면 환자가 드러나기 때문이다.
+ */
+export type PublicReview = {
+  id: string;
+  rating: number;
+  comment?: string;
+  createdAt: string;
+  reviewerName: string;
+};
+
+/**
+ * 사람이 받은 평가의 요약.
+ *
+ * 평균을 프로필 컬럼으로 들고 있지 않고 그때그때 센다.
+ * 저장해 두면 후기가 바뀔 때마다 두 값이 어긋나고, 어긋난 평균은 아무도 알아차리지 못한다.
+ */
+export type UserRating = {
+  /** 후기가 없으면 없음 */
+  ratingAvg?: number;
+  reviewCount: number;
+};
+
+export const EmptyRating: UserRating = { reviewCount: 0 };
+
+/** 후기 작성 화면이 채우는 값 */
+export type ReviewInput = {
+  rating: number;
+  comment?: string;
+};
+
+/** '4.3 (12건)'. 후기가 없으면 그 사실을 그대로 말한다 — 0.0 으로 보이면 나쁜 평가로 읽힌다. */
+export function formatRating(rating: UserRating): string {
+  return rating.ratingAvg !== undefined
+    ? `${rating.ratingAvg.toFixed(1)} (${rating.reviewCount}건)`
+    : '아직 받은 후기 없음';
 }

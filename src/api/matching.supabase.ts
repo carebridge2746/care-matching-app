@@ -5,9 +5,11 @@ import { toApiError } from '@/api/supabase-error';
 import { sortSlots } from '@/lib/availability';
 import {
   CareTimeSlots,
+  EmptyRating,
   Weekdays,
   type AvailabilitySlot,
   type CaregiverCandidate,
+  type UserRating,
 } from '@/types';
 
 /**
@@ -51,7 +53,18 @@ function toCandidate(row: RecommendationCandidateRow): CaregiverCandidate {
     ...(row.min_daily_wage !== null ? { minDailyWage: row.min_daily_wage } : {}),
     ...(row.introduction ? { introduction: row.introduction } : {}),
     availability: parseAvailability(row.availability),
+    rating: toRating(row.rating_avg, row.review_count),
   };
+}
+
+/** numeric 은 자릿수를 잃지 않도록 문자열로 내려온다. 후기가 없으면 null 이다. */
+function toRating(average: string | number | null, count: number): UserRating {
+  if (average === null) {
+    return EmptyRating;
+  }
+
+  const value = typeof average === 'string' ? Number(average) : average;
+  return Number.isFinite(value) ? { ratingAvg: value, reviewCount: count } : EmptyRating;
 }
 
 export const supabaseMatchingAdapter: MatchingAdapter = {

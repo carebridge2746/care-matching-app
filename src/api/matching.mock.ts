@@ -3,9 +3,10 @@ import { readMockUsers } from '@/api/auth.mock';
 import { readAllMockCaregiverProfiles } from '@/api/caregiver.mock';
 import type { MatchingAdapter } from '@/api/matching.types';
 import { delay, loadCareRequests } from '@/api/mock-store';
+import { readMockRatings } from '@/api/reviews.mock';
 import { scoreMatch } from '@/lib/matching';
 import { maskPersonName } from '@/lib/privacy';
-import type { CaregiverCandidate, CaregiverProfile } from '@/types';
+import { EmptyRating, type CaregiverCandidate, type CaregiverProfile, type UserRating } from '@/types';
 
 /**
  * 로컬 Mock 매칭 어댑터.
@@ -18,7 +19,11 @@ import type { CaregiverCandidate, CaregiverProfile } from '@/types';
 /** 추천 후보로 한 번에 내려보내는 최대 인원. Supabase 쪽 함수와 같은 값이어야 한다. */
 const CandidateLimit = 50;
 
-function toCandidate(profile: CaregiverProfile, name: string): CaregiverCandidate {
+function toCandidate(
+  profile: CaregiverProfile,
+  name: string,
+  rating: UserRating
+): CaregiverCandidate {
   return {
     id: profile.id,
     // 매칭이 확정되기 전에는 성만 보여 준다 (환자 이름을 가리는 것과 같은 규칙)
@@ -32,6 +37,7 @@ function toCandidate(profile: CaregiverProfile, name: string): CaregiverCandidat
     ...(profile.minDailyWage !== undefined ? { minDailyWage: profile.minDailyWage } : {}),
     ...(profile.introduction ? { introduction: profile.introduction } : {}),
     availability: profile.availability,
+    rating,
   };
 }
 
@@ -46,9 +52,11 @@ export const mockMatchingAdapter: MatchingAdapter = {
       throw new ApiError('not_found', '요청을 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
 
-    const [profiles, users] = await Promise.all([
+    const [profiles, users, ratings] = await Promise.all([
       readAllMockCaregiverProfiles(),
       readMockUsers(),
+      // 평균 별점은 저장해 두지 않고 여기서 센다 — Supabase 쪽에서는 user_ratings 뷰가 같은 일을 한다
+      readMockRatings(),
     ]);
 
     return profiles
@@ -63,7 +71,9 @@ export const mockMatchingAdapter: MatchingAdapter = {
       .flatMap((profile) => {
         const user = users.find((item) => item.id === profile.id);
         // 계정이 사라진 프로필은 내보내지 않는다 (Supabase 쪽에서는 조인이 같은 일을 한다)
-        return user ? [toCandidate(profile, user.name)] : [];
+        return user
+          ? [toCandidate(profile, user.name, ratings.get(profile.id) ?? EmptyRating)]
+          : [];
       })
       .slice(0, CandidateLimit);
   },

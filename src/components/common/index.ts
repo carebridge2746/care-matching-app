@@ -7,6 +7,7 @@ export { EmptyState, type EmptyStateProps } from './empty-state';
 export { LoadingView, type LoadingViewProps } from './loading-view';
 export { MultiChoiceGroup, type MultiChoiceGroupProps } from './multi-choice-group';
 export { Screen, type ScreenProps } from './screen';
+export { StarRating, type StarRatingProps } from './star-rating';
 export { StatusBadge, type StatusBadgeProps } from './status-badge';
 export { TagField, type TagFieldProps } from './tag-field';
 export { TextField, type TextFieldProps } from './text-field';

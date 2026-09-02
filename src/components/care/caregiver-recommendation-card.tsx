@@ -3,9 +3,10 @@ import { StyleSheet, View } from 'react-native';
 import { MatchScoreBadge } from '@/components/care/match-score-badge';
 import { AppText } from '@/components/common/app-text';
 import { Card } from '@/components/common/card';
+import { StarRating } from '@/components/common/star-rating';
 import { summarizeAvailability } from '@/lib/availability';
 import { Colors, Layout, Radius, Spacing } from '@/theme';
-import { GenderLabels, type CaregiverRecommendation } from '@/types';
+import { formatRating, GenderLabels, type CaregiverRecommendation } from '@/types';
 
 export type CaregiverRecommendationCardProps = {
   recommendation: CaregiverRecommendation;
@@ -34,6 +35,17 @@ export function CaregiverRecommendationCard({
           {caregiver.name} · {GenderLabels[caregiver.gender]}
         </AppText>
         <MatchScoreBadge score={score.total} />
+      </View>
+
+      {/*
+        평균 별점은 보여 주기만 하고 위 적합도 점수에는 들어가지 않는다.
+        별점을 배점에 섞으면 후기가 없는 새 간병인이 계속 아래로 밀려 첫 매칭을 잡지 못한다.
+      */}
+      <View style={styles.rating}>
+        <StarRating value={Math.round(caregiver.rating.ratingAvg ?? 0)} />
+        <AppText variant="caption" tone="secondary">
+          {formatRating(caregiver.rating)}
+        </AppText>
       </View>
 
       <AppText variant="body" tone="secondary">
@@ -80,6 +92,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.md,
+    flexWrap: 'wrap',
+  },
+  rating: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
     flexWrap: 'wrap',
   },
   breakdown: {

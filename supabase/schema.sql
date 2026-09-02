@@ -1127,3 +1127,257 @@ create trigger care_requests_cancel_matches
 --     같은 요청에 대체 간병인을 추천한다. care_requests.status 의 no_show 가 그 자리다.
 --   Phase 11 (관리자): 관리자가 모든 매칭을 조회한다. 정책 안에서 profiles 를 다시 조회하면
 --     재귀가 생기므로 is_caregiver() 처럼 security definer 함수로 감싼다.
+
+-- ===========================================================================
+-- Phase 8 — 후기와 신뢰도
+-- ===========================================================================
+--
+-- 후기는 매칭에 달린다. 사람이 아니라 "함께한 간병 한 건"에 달려야
+-- 근거 없는 평가가 쌓이지 않는다. 그래서 reviews 는 matches.id 를 가리키고,
+-- 끝난 간병(completed)에만 쓸 수 있다.
+--
+--   matches 1 ──< reviews (한 매칭에 최대 두 줄: 보호자→간병인, 간병인→보호자)
+--
+-- 평균 별점은 컬럼으로 들고 있지 않고 그때그때 센다. 아래 user_ratings 뷰가 그 자리다.
+-- 프로필에 rating_avg 를 적어 두면 후기가 지워지거나 고쳐질 때마다 두 값이 어긋나기 시작하고,
+-- 어긋난 평균은 아무도 바로 알아차리지 못한다. 후기 수가 만 단위로 늘어나기 전까지
+-- 집계는 인덱스 하나로 충분하다.
+
+-- 27) 후기 -------------------------------------------------------------------
+
+create table if not exists public.reviews (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid not null references public.matches (id) on delete cascade,
+  reviewer_id uuid not null references public.profiles (id) on delete cascade,
+  reviewee_id uuid not null references public.profiles (id) on delete cascade,
+
+  rating smallint not null check (rating between 1 and 5),
+  comment text,
+
+  created_at timestamptz not null default now(),
+
+  -- 한 매칭에 대해 한 사람은 한 번만 쓴다. 상대도 각자 한 줄을 쓰므로 매칭당 최대 두 줄이다.
+  constraint reviews_one_per_reviewer unique (match_id, reviewer_id),
+  -- 자기 자신에게는 쓸 수 없다
+  constraint reviews_not_self check (reviewer_id <> reviewee_id)
+);
+
+comment on table public.reviews is '끝난 간병 한 건에 대한 상호 평가. 매칭당 사람마다 한 줄씩.';
+comment on column public.reviews.reviewee_id is '평가를 받는 사람. 매칭의 상대편이며 앱이 아니라 create_review() 가 정한다.';
+
+-- 평균 별점을 세는 조회에 쓴다
+create index if not exists reviews_reviewee_id_idx on public.reviews (reviewee_id);
+create index if not exists reviews_match_id_idx on public.reviews (match_id);
+
+alter table public.reviews enable row level security;
+
+-- 원문(코멘트)까지 그대로 읽는 것은 당사자 두 사람뿐이다.
+-- 다른 사람에게 보여 주는 일은 아래 public_reviews() 함수가 맡는다 — 그쪽은 작성자 이름을 가린다.
+drop policy if exists "후기 당사자 조회" on public.reviews;
+create policy "후기 당사자 조회"
+  on public.reviews for select
+  to authenticated
+  using (
+    (select auth.uid()) = reviewer_id
+    or (select auth.uid()) = reviewee_id
+  );
+
+-- insert/update/delete 정책은 두지 않는다.
+-- 쓰는 일은 create_review() 만 할 수 있고, 한번 쓴 후기는 고치거나 지울 수 없다.
+-- 평가는 상대의 신뢰도로 남는 기록이라, 나중에 조용히 바뀌면 아무도 믿을 수 없게 된다.
+
+-- 28) 평균 별점 ---------------------------------------------------------------
+--
+-- 별점과 개수만 내보낸다. 코멘트 원문은 들어 있지 않으므로 누구에게 보여도 된다.
+-- 보호자와 간병인 모두 평가를 받으므로 reviewee 기준으로 한 번에 센다.
+
+create or replace view public.user_ratings
+with (security_invoker = false) as
+select
+  r.reviewee_id as user_id,
+  round(avg(r.rating)::numeric, 2) as rating_avg,
+  count(*)::integer as review_count
+from public.reviews r
+group by r.reviewee_id;
+
+comment on view public.user_ratings is '사람별 평균 별점과 후기 수. 코멘트는 담기지 않아 누구에게나 열어도 된다.';
+
+revoke all on public.user_ratings from anon;
+grant select on public.user_ratings to authenticated;
+
+-- 29) 남에게 보여 주는 후기 ---------------------------------------------------
+--
+-- 간병인 프로필이나 추천 목록에서 "이 사람이 어떤 평가를 받았는가"를 읽는 창구다.
+-- 작성자 이름은 성만 남긴다 — 후기를 누가 썼는지는 당사자끼리만 알면 된다.
+-- 어느 간병 건이었는지(match_id)도 내보내지 않는다. 매칭을 되짚으면 환자가 드러난다.
+
+create or replace function public.public_reviews(subject_id uuid)
+returns table (
+  id uuid,
+  rating smallint,
+  comment text,
+  created_at timestamptz,
+  reviewer_name text
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    r.id,
+    r.rating,
+    r.comment,
+    r.created_at,
+    public.mask_person_name(p.name)
+  from public.reviews r
+  join public.profiles p on p.id = r.reviewer_id
+  where r.reviewee_id = subject_id
+  order by r.created_at desc
+  limit 50;
+$$;
+
+comment on function public.public_reviews(uuid) is '이 사람이 받은 후기. 작성자 이름은 가려서 내보낸다.';
+
+revoke all on function public.public_reviews(uuid) from public, anon;
+grant execute on function public.public_reviews(uuid) to authenticated;
+
+-- 30) 후기 쓰기 ---------------------------------------------------------------
+--
+-- 앱이 reviewee_id 를 정하지 않는다. 상대가 누구인지는 매칭이 이미 알고 있고,
+-- 앱이 보낸 값을 믿으면 아무에게나 별점을 달 수 있다.
+--
+-- 끝난 간병에만 쓸 수 있다. 취소된 매칭은 평가할 간병이 없었던 것이고,
+-- 진행 중인 간병을 평가하면 남은 기간에 그대로 영향을 준다.
+
+create or replace function public.create_review(match_id uuid, rating smallint, comment text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target public.matches%rowtype;
+  reviewee uuid;
+  review_id uuid;
+begin
+  if rating is null or rating < 1 or rating > 5 then
+    raise exception '별점은 1점에서 5점 사이여야 합니다.' using errcode = '23514';
+  end if;
+
+  select * into target
+  from public.matches m
+  where m.id = match_id
+    and (m.guardian_id = actor or m.caregiver_id = actor);
+
+  -- 없는 매칭과 남의 매칭을 구분해서 알려 주지 않는다
+  if target.id is null then
+    return null;
+  end if;
+  if target.status <> 'completed' then
+    raise exception '끝난 간병에만 후기를 남길 수 있습니다.' using errcode = '22023';
+  end if;
+
+  reviewee := case when target.guardian_id = actor then target.caregiver_id else target.guardian_id end;
+
+  insert into public.reviews (match_id, reviewer_id, reviewee_id, rating, comment)
+  values (match_id, actor, reviewee, rating, nullif(trim(comment), ''))
+  -- 이미 쓴 후기는 덮어쓰지 않는다. 앱은 null 을 받고 "이미 남기셨습니다"로 안내한다.
+  on conflict (match_id, reviewer_id) do nothing
+  returning id into review_id;
+
+  return review_id;
+end;
+$$;
+
+comment on function public.create_review(uuid, smallint, text) is '끝난 간병에 후기를 남긴다. 이미 남겼으면 null 을 돌려준다.';
+
+revoke all on function public.create_review(uuid, smallint, text) from public, anon;
+grant execute on function public.create_review(uuid, smallint, text) to authenticated;
+
+-- 31) 추천 후보에 신뢰도 얹기 -------------------------------------------------
+--
+-- 보호자가 간병인을 고를 때 평균 별점은 경력만큼이나 중요한 근거다.
+-- 반환 컬럼이 바뀌므로 create or replace 로는 안 되고 먼저 지워야 한다.
+--
+-- 점수 계산에는 아직 넣지 않는다. 별점을 배점에 섞으면 후기가 없는 새 간병인이
+-- 계속 아래로 밀려 첫 매칭을 잡지 못한다. 화면에는 보여 주되 순위는 지금 규칙대로 둔다 —
+-- 몇 건 이상부터 어떻게 반영할지는 후기가 쌓인 뒤에 정한다.
+
+drop function if exists public.recommendation_candidates(uuid);
+
+create or replace function public.recommendation_candidates(request_id uuid)
+returns table (
+  caregiver_id uuid,
+  name text,
+  gender text,
+  years_of_experience smallint,
+  certifications text[],
+  skills text[],
+  care_types text[],
+  regions text[],
+  min_daily_wage integer,
+  introduction text,
+  availability text[],
+  rating_avg numeric,
+  review_count integer
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  req public.care_requests%rowtype;
+begin
+  select * into req from public.care_requests r where r.id = request_id;
+
+  if req.id is null or req.guardian_id <> (select auth.uid()) then
+    return;
+  end if;
+
+  return query
+  select
+    p.id,
+    public.mask_person_name(pr.name),
+    p.gender,
+    p.years_of_experience,
+    p.certifications,
+    p.skills,
+    p.care_types,
+    p.regions,
+    p.min_daily_wage,
+    p.introduction,
+    coalesce(
+      array_agg(a.weekday || ':' || a.slot) filter (where a.weekday is not null),
+      '{}'
+    ),
+    ur.rating_avg,
+    coalesce(ur.review_count, 0)
+  from public.caregiver_profiles p
+  join public.profiles pr on pr.id = p.id
+  left join public.caregiver_availability a on a.caregiver_id = p.id
+  -- 후기가 없는 간병인도 후보에서 빠지지 않는다 (left join)
+  left join public.user_ratings ur on ur.user_id = p.id
+  where
+    req.care_type = any (p.care_types)
+    and (req.preferred_caregiver_gender = 'any' or p.gender = req.preferred_caregiver_gender)
+    and p.id is distinct from req.matched_caregiver_id
+  group by p.id, pr.name, ur.rating_avg, ur.review_count
+  order by p.years_of_experience desc, p.id
+  limit 50;
+end;
+$$;
+
+comment on function public.recommendation_candidates(uuid) is '요청의 추천 후보가 될 수 있는 간병인. 평균 별점을 함께 내보내되 점수는 매기지 않는다.';
+
+revoke all on function public.recommendation_candidates(uuid) from public, anon;
+grant execute on function public.recommendation_candidates(uuid) to authenticated;
+
+-- 32) 아직 열지 않은 것 -------------------------------------------------------
+--
+--   후기 수정·삭제: 열지 않았다. 신뢰도로 남는 기록이라 조용히 바뀌면 안 된다.
+--     신고와 운영자 삭제는 Phase 11(관리자)에서 별도 창구로 다룬다.
+--   점수 반영: 별점을 매칭 점수에 넣을지, 넣는다면 몇 건부터 얼마나 반영할지는
+--     후기가 쌓인 뒤에 정한다. 지금은 화면에 보여 주기만 한다.

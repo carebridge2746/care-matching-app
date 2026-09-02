@@ -13,10 +13,12 @@ import {
   TextField,
   type ChoiceOption,
 } from '@/components/common';
+import { ReviewList } from '@/components/care';
 import { CommonCareSkills, CommonCertifications } from '@/lib/care-options';
 import { validateAtLeastOne, validateBudget, validateYearsOfExperience } from '@/lib/validation';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
+import { useReviewsStore } from '@/store/use-reviews-store';
 import { Spacing } from '@/theme';
 import { CareTypeLabels, GenderLabels, type CaregiverProfile, type CareType, type Gender } from '@/types';
 
@@ -92,6 +94,34 @@ type ProfileFormProps = {
   /** 아직 등록 전이면 null */
   profile: CaregiverProfile | null;
 };
+
+/**
+ * 지금까지 받은 평가.
+ *
+ * 프로필 화면에 두는 이유는 보호자가 보는 것과 같은 값이기 때문이다 —
+ * 내가 어떻게 보이는지를 프로필과 같은 자리에서 확인할 수 있어야 한다.
+ * 작성자 이름은 본인에게도 성만 보인다.
+ */
+function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
+  const rating = useReviewsStore((state) => state.rating);
+  const received = useReviewsStore((state) => state.received);
+  const load = useReviewsStore((state) => state.load);
+
+  useEffect(() => {
+    void load(caregiverId);
+  }, [caregiverId, load]);
+
+  return (
+    <View style={styles.section}>
+      <AppText variant="heading">받은 평가</AppText>
+      <ReviewList
+        rating={rating}
+        reviews={received}
+        emptyMessage="간병을 마치면 보호자가 남긴 후기가 여기에 쌓입니다."
+      />
+    </View>
+  );
+}
 
 function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
   const router = useRouter();
@@ -169,9 +199,11 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
       <View style={styles.intro}>
         <AppText variant="body" tone="secondary">
           여기에 적은 내용으로 조건이 맞는 간병 요청을 찾아 드립니다. 보호자에게는 이름과
-          자기소개, 경력과 자격만 보입니다.
+          자기소개, 경력과 자격, 그리고 지금까지 받은 평가가 보입니다.
         </AppText>
       </View>
+
+      <ReceivedReviews caregiverId={caregiverId} />
 
       <View style={styles.section}>
         <AppText variant="heading">기본 정보</AppText>

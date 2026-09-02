@@ -129,6 +129,9 @@ export type RecommendationCandidateRow = {
   min_daily_wage: number | null;
   introduction: string | null;
   availability: string[];
+  /** 평균 별점. 후기가 없으면 null. numeric 이므로 문자열로 내려올 수 있다. */
+  rating_avg: string | number | null;
+  review_count: number;
 };
 
 /** 매칭 상태의 데이터베이스 표기. 요청 상태와 마찬가지로 snake_case 다. */
@@ -187,6 +190,40 @@ export type MatchDetailRow = MatchRow & {
   caregiver_phone: string | null;
   guardian_name: string;
   guardian_phone: string | null;
+};
+
+/** 끝난 간병 한 건에 대한 평가. 매칭당 사람마다 한 줄이다. */
+export type ReviewRow = {
+  id: string;
+  match_id: string;
+  reviewer_id: string;
+  reviewee_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+};
+
+/**
+ * public.user_ratings 뷰의 행.
+ * 평균은 컬럼으로 저장하지 않고 이 뷰가 그때그때 센다.
+ */
+export type UserRatingRow = {
+  user_id: string;
+  /** numeric 은 자릿수를 잃지 않도록 문자열로 내려온다 */
+  rating_avg: string | number | null;
+  review_count: number;
+};
+
+/**
+ * public.public_reviews() 가 돌려주는 행.
+ * 작성자 이름은 가려져 있고, 어느 간병 건이었는지는 담기지 않는다.
+ */
+export type PublicReviewRow = {
+  id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  reviewer_name: string;
 };
 
 /** 상태 표기 변환 — 저장할 때 */
@@ -306,6 +343,17 @@ export type Database = {
         Update: Partial<MatchRow>;
         Relationships: [];
       };
+      /**
+       * 후기도 읽기만 한다. 쓰는 일은 create_review() 만 할 수 있고,
+       * 한번 쓴 후기는 고치거나 지울 수 없다 (update·delete 정책 없음).
+       */
+      reviews: {
+        Row: ReviewRow;
+        Insert: Omit<ReviewRow, 'id' | 'created_at'> &
+          Partial<Pick<ReviewRow, 'id' | 'created_at'>>;
+        Update: Partial<ReviewRow>;
+        Relationships: [];
+      };
     };
     Views: {
       /** 간병인이 읽을 수 있는 유일한 요청 창구. 대기중 요청과 본인이 수락한 요청만 담긴다. */
@@ -316,6 +364,11 @@ export type Database = {
       /** 매칭 당사자가 서로와 간병 내용을 읽는 창구. 본인이 낀 매칭만 담긴다. */
       match_details: {
         Row: MatchDetailRow;
+        Relationships: [];
+      };
+      /** 사람별 평균 별점과 후기 수. 코멘트가 없어 누구에게나 열어도 된다. */
+      user_ratings: {
+        Row: UserRatingRow;
         Relationships: [];
       };
     };
@@ -351,6 +404,20 @@ export type Database = {
       cancel_match: {
         Args: { match_id: string; reason?: string | null };
         Returns: string | null;
+      };
+      /**
+       * 끝난 간병에 후기를 남긴다.
+       * 피평가자는 앱이 정하지 않는다 — 매칭의 상대편을 함수가 직접 고른다.
+       * 이미 남긴 후기가 있으면 null 을 돌려준다.
+       */
+      create_review: {
+        Args: { match_id: string; rating: number; comment?: string | null };
+        Returns: string | null;
+      };
+      /** 이 사람이 받은 후기. 작성자 이름은 가려서 내려온다. */
+      public_reviews: {
+        Args: { subject_id: string };
+        Returns: PublicReviewRow[];
       };
     };
     Enums: Record<string, never>;

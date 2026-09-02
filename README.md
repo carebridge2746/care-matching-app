@@ -54,7 +54,7 @@ Supabase Edge Function의 secret으로만 설정합니다.
 ```
 src/
 ├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests · caregiver ·
-│                 #   matching · match-history · llm)마다 .mock.ts / .supabase.ts
+│                 #   matching · match-history · reviews · llm)마다 .mock.ts / .supabase.ts
 │                 #   두 구현을 두고 mode.ts 로 고른다
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
@@ -106,7 +106,7 @@ Edge Function은 앱과 다른 런타임(Deno)에서 돌아가므로 `tsconfig.j
 | `/guardian/requests/[id]` | 보호자 | 요청 상세와 추천 간병인, 진행 중인 간병 |
 | `/guardian/matches` | 보호자 | 간병 진행 상황과 지난 간병 이력 |
 | `/caregiver` | 간병인 | 간병인 홈 |
-| `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정 |
+| `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정, 받은 평가와 후기 |
 | `/caregiver/availability` | 간병인 | 근무 가능 요일·시간대 설정 |
 | `/caregiver/requests` | 간병인 | 대기 중인 간병 요청 목록 |
 | `/caregiver/accepted` | 간병인 | 수락한 간병과 진행 상황(시작·종료·취소) |
@@ -202,7 +202,7 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 | 화면 | 경로 | 하는 일 |
 | --- | --- | --- |
 | 간병인 홈 | `/caregiver` | 등록 상태, 수락 가능한 요청 건수, 가장 최근 요청 미리보기 |
-| 프로필과 역량 | `/caregiver/profile` | 성별·경력·자격·역량·간병 장소·근무 지역·자기소개 |
+| 프로필과 역량 | `/caregiver/profile` | 성별·경력·자격·역량·간병 장소·근무 지역·자기소개, 받은 평가 |
 | 가능 시간 | `/caregiver/availability` | 요일 × 오전/오후/야간 표에서 근무 가능한 칸 선택 |
 | 간병 요청 찾기 | `/caregiver/requests` | 아직 아무도 수락하지 않은 요청 목록 |
 | 요청 상세 | `/caregiver/requests/[id]` | 요청 원문·조건·환자 상태 확인, 매칭 수락 |
@@ -395,6 +395,67 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 대상이 같은 간병 한 건이고, 어느 쪽에서 보는지는 `party` 하나로 갈립니다. 무엇을 보여 줄지
 (연락처, 환자 특이사항)는 화면이 아니라 어댑터가 정해서 내려줍니다.
 
+## 후기와 신뢰도 (Phase 8)
+
+```
+간병 종료(completed) → 보호자·간병인이 서로에게 별점과 후기 → 평균 별점이 프로필과 추천에 반영
+```
+
+후기는 사람이 아니라 **함께한 간병 한 건**에 달립니다. `reviews` 는 `matches.id` 를 가리키고,
+끝난 간병에만 쓸 수 있습니다. 취소된 매칭에는 평가할 간병이 없었고, 진행 중인 간병을 평가하면
+남은 기간에 그대로 영향을 줍니다.
+
+| 규칙 | 지키는 곳 |
+| --- | --- |
+| 끝난 간병(`completed`)에만 쓸 수 있다 | `create_review()` |
+| 한 매칭에 한 사람은 한 번만 쓴다 (매칭당 최대 두 줄) | `unique (match_id, reviewer_id)` |
+| 피평가자는 앱이 정하지 않는다 | `create_review()` 가 매칭의 상대편을 고른다 |
+| 한번 쓴 후기는 고치거나 지울 수 없다 | `update`·`delete` 정책 없음 |
+
+마지막 규칙이 조금 강해 보일 수 있습니다. 평가는 상대의 신뢰도로 남는 기록이라, 나중에 조용히
+바뀌면 아무도 믿을 수 없게 됩니다. 잘못된 후기의 신고와 삭제는 Phase 11(관리자)에서 별도 창구로
+다룹니다.
+
+### 평균 별점을 저장하지 않는 이유
+
+`caregiver_profiles` 에 `rating_avg` 컬럼을 두지 않았습니다. 대신 `public.user_ratings` 뷰가
+그때그때 셉니다. 컬럼으로 들고 있으면 후기가 늘거나 지워질 때마다 두 값을 함께 고쳐야 하고,
+한 번 어긋난 평균은 아무도 바로 알아차리지 못합니다. 후기 수가 만 단위로 늘어나기 전까지
+집계는 인덱스 하나로 충분합니다.
+
+보호자와 간병인 모두 평가를 받으므로 뷰는 `reviewee_id` 기준으로 한 번에 셉니다.
+
+### 누가 무엇을 보는가
+
+| 창구 | 하는 일 |
+| --- | --- |
+| `reviews` (테이블) | 당사자 두 사람만 원문까지 조회. 쓰기 정책은 없다 |
+| `public.create_review()` (함수) | 끝난 간병에 후기를 남긴다. 이미 남겼으면 `null` |
+| `public.user_ratings` (뷰) | 사람별 평균 별점과 후기 수. 코멘트가 없어 누구에게나 열어도 된다 |
+| `public.public_reviews()` (함수) | 이 사람이 받은 후기. 작성자 이름은 성만 남긴다 |
+
+`public_reviews()` 는 어느 간병 건이었는지(`match_id`)를 내보내지 않습니다. 매칭을 되짚으면
+환자가 드러나기 때문입니다. 작성자 이름을 가리는 규칙은 환자 이름을 가리는 것과 같습니다.
+
+### 점수에는 아직 넣지 않았습니다
+
+추천 목록(`recommendation_candidates()`)은 평균 별점을 **함께 내보내고 화면에도 보여 주지만**,
+적합도 점수(`src/lib/matching.ts`)의 배점에는 들어가지 않습니다. 별점을 배점에 섞으면 후기가
+없는 새 간병인이 계속 아래로 밀려 첫 매칭을 잡지 못합니다. 몇 건 이상부터 얼마나 반영할지는
+후기가 실제로 쌓인 뒤에 정하는 편이 낫습니다.
+
+### 화면
+
+| 화면 | 하는 일 |
+| --- | --- |
+| `/caregiver/accepted`, `/guardian/matches` | 끝난 간병 카드에서 별점과 후기 작성. 이미 남겼으면 그 사실만 표시 |
+| `/caregiver/profile` | 받은 평균 별점과 후기 목록 (보호자에게 보이는 것과 같은 값) |
+| `/guardian/requests/[id]` | 추천 간병인 카드에 평균 별점 표시 |
+
+별점은 개수만으로 알리지 않고 '4점 · 좋았습니다'처럼 숫자와 뜻을 함께 보여 줍니다
+(`StarRating`). 코멘트는 비워도 됩니다 — 한 줄이라도 적게 하려고 입력을 막으면 대부분은
+아무것도 남기지 않고 화면을 닫습니다. 별점만이라도 쌓이는 편이 낫습니다.
+
 ## AI 자연어 구조화
 
 ```
@@ -489,7 +550,7 @@ AI 없이 굴러가야 하기 때문입니다.
 ```
 profiles(보호자)  1 ──< patients(환자)  1 ──< care_requests(간병 요청)  1 ──< matches(매칭)
 profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availability
-profiles(간병인)  1 ──< matches
+profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최대 2건)
 ```
 
 | 테이블 | 내용 |
@@ -500,6 +561,7 @@ profiles(간병인)  1 ──< matches
 | `caregiver_profiles` | 간병인의 성별·경력·자격·역량·간병 장소·근무 지역·희망 일당·자기소개 (`profiles`와 1:1) |
 | `caregiver_availability` | 근무 가능한 요일·시간대. 표의 칸 하나가 한 행 |
 | `matches` | 수락 이후의 간병 한 건. 상태와 수락·시작·종료·취소 시각, 취소한 사람과 사유 |
+| `reviews` | 끝난 간병에 대한 상호 평가. 별점과 후기, 매칭당 사람마다 한 줄 |
 
 간병인 프로필은 `profiles.id`를 그대로 기본키로 씁니다. 한 사람당 프로필이 하나뿐이라
 별도 식별자가 필요 없습니다. 가능 시간을 jsonb 한 덩어리가 아니라 칸 단위 행으로 둔 것은
@@ -524,8 +586,8 @@ profiles(간병인)  1 ──< matches
 | --- | --- |
 | 보호자 | 본인이 등록한 환자·요청만 조회/등록/수정. 삭제는 환자, 그리고 아직 매칭되지 않은(`pending`) 요청만 |
 | 간병인 | `patients`·`care_requests`에 직접 접근 불가 (아래 창구로만 다룬다). 본인의 `caregiver_profiles`·`caregiver_availability`는 조회/등록/수정 |
-| 당사자 두 사람 | 본인이 낀 `matches`는 **조회만**. 만들고 바꾸는 일은 함수만 할 수 있다 |
-| 관리자 | `patients`·`care_requests`·`matches` 접근 불가 |
+| 당사자 두 사람 | 본인이 낀 `matches`와 자기가 쓰거나 받은 `reviews`는 **조회만**. 만들고 바꾸는 일은 함수만 할 수 있다 |
+| 관리자 | `patients`·`care_requests`·`matches`·`reviews` 접근 불가 |
 
 요청 행에서 `matched_caregiver_id`·`matched_at`은 앱이 아예 쓸 수 없습니다. RLS 정책은
 "어느 행"만 정하고 "어느 컬럼"은 정하지 못하므로, 이 두 컬럼은 컬럼 권한(`grant update (...)`)으로
@@ -542,6 +604,8 @@ profiles(간병인)  1 ──< matches
 | `public.recommendation_candidates()` (함수) | 본인 요청의 추천 후보를 이름 가려서 내보낸다 (보호자용) |
 | `public.match_details` (뷰) | 당사자가 서로와 간병 내용을 읽는다. 취소된 매칭은 연락처를 다시 가린다 |
 | `public.start_care()` · `complete_care()` · `cancel_match()` (함수) | 매칭과 요청 상태를 함께 옮긴다 |
+| `public.create_review()` (함수) | 끝난 간병에 후기를 남긴다. 피평가자는 함수가 정한다 |
+| `public.user_ratings` (뷰) · `public.public_reviews()` (함수) | 평균 별점과, 작성자를 가린 후기 목록 |
 
 두 창구 모두 호출한 사람이 간병인인지 `public.is_caregiver()` 로 데이터베이스가 직접 확인합니다.
 정책이나 뷰 안에서 `profiles`를 그대로 조회하면 재귀가 생기므로 `security definer` 함수로 감쌌습니다.
@@ -556,8 +620,6 @@ profiles(간병인)  1 ──< matches
 
 - Phase 6 (매칭): `recommendation_candidates()` 가 후보를 내보냅니다. 간병인이 50명을 넘어가면
   경력이 짧은 쪽부터 잘리므로, 그때는 지역으로도 걸러야 합니다.
-- Phase 8 (후기): `completed` 매칭에만 후기를 달 수 있게 합니다. 매칭 한 건당 한 번씩,
-  보호자와 간병인이 서로에게 남기고, `reviews` 테이블이 `matches.id` 를 가리킵니다.
 - Phase 10 (노쇼): `cancelled` 매칭 중 시작 예정 시각이 지난 뒤에 끊긴 것을 노쇼로 구분하고,
   같은 요청에 대체 간병인을 추천합니다. `care_requests.status` 의 `no_show` 가 그 자리입니다.
 - Phase 11 (관리자): 관리자 조회 권한을 추가합니다. 정책 안에서 `profiles`를 다시 조회하면
@@ -574,7 +636,7 @@ profiles(간병인)  1 ──< matches
 | 5 | 간병인 프로필 · 역량 · 자격 · 가능 시간 | 완료 |
 | 6 | 매칭 알고리즘 · 추천 간병인 (양방향) | 완료 |
 | 7 | 매칭 이력(`matches`) · 간병 진행 · 취소와 재매칭 | 완료 |
-| 8 | 후기/평가 · 신뢰도 반영 | 예정 |
+| 8 | 후기/평가 · 신뢰도 반영 | 완료 |
 | 9 | 교육 · 퀴즈 · 수료 | 예정 |
 | 10 | 노쇼 · 대체 간병인 추천 | 예정 |
 | 11 | 관리자 기능 | 예정 |
