@@ -16,5 +16,16 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  // Edge Function 은 앱이 아니라 Deno 에서 돌아간다. Deno 전역(Deno.serve)과 npm:/URL import 를
+  // 앱의 TypeScript 설정으로 검사하면 있지도 않은 오류가 난다. 검사는 Supabase CLI 가 맡는다.
+  // exclude 를 적으면 기본값을 대체하므로 node_modules 등도 함께 적어 준다.
+  "exclude": [
+    "node_modules",
+    "supabase/functions",
+    "babel.config.js",
+    "metro.config.js",
+    "android",
+    "ios"
   ]
 }

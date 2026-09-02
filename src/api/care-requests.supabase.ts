@@ -8,7 +8,7 @@ import {
 } from '@/api/database.types';
 import { getSupabaseClient } from '@/api/supabase-client';
 import { toApiError } from '@/api/supabase-error';
-import type { CareRequest, CaregiverCareRequest } from '@/types';
+import type { AiCareConditions, CareRequest, CaregiverCareRequest } from '@/types';
 
 /**
  * Supabase 간병 요청 어댑터.
@@ -23,13 +23,13 @@ import type { CareRequest, CaregiverCareRequest } from '@/types';
  */
 
 const Columns =
-  'id, guardian_id, patient_id, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, preferred_caregiver_gender, budget_per_day, status, matched_caregiver_id, matched_at, created_at, updated_at';
+  'id, guardian_id, patient_id, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, preferred_caregiver_gender, budget_per_day, status, matched_caregiver_id, matched_at, ai_conditions, ai_analyzed_at, created_at, updated_at';
 
 const CaregiverColumns =
   'id, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, preferred_caregiver_gender, budget_per_day, status, matched_caregiver_id, matched_at, created_at, updated_at, patient_name, patient_birth_year, patient_gender, patient_mobility, patient_cognition, patient_conditions';
 
-/** 조회한 컬럼만 담긴 행 (ai_conditions 등은 목록 화면에서 쓰지 않아 받아오지 않는다) */
-type SelectedRow = Omit<CareRequestRow, 'ai_conditions' | 'ai_analyzed_at'>;
+/** 보호자 화면이 읽는 요청 행. 지금은 모든 컬럼을 받아온다. */
+type SelectedRow = CareRequestRow;
 
 type CareRequestInsert = Database['public']['Tables']['care_requests']['Insert'];
 
@@ -61,6 +61,10 @@ function toCareRequest(row: SelectedRow): CareRequest {
     guardianId: row.guardian_id,
     patientId: row.patient_id,
     ...toCareRequestFields(row),
+    // jsonb 는 무엇이든 담을 수 있으므로 타입은 여기서만 붙인다.
+    // 값의 형태는 Edge Function 의 스키마가 정하고, 앱 타입으로 옮기는 일은 llm.supabase.ts 가 한다.
+    ...(row.ai_conditions ? { aiConditions: row.ai_conditions as AiCareConditions } : {}),
+    ...(row.ai_analyzed_at ? { aiAnalyzedAt: row.ai_analyzed_at } : {}),
   };
 }
 
@@ -93,6 +97,10 @@ function toColumns(guardianId: string, input: CareRequestInput): CareRequestInse
     required_skills: input.requiredSkills,
     preferred_caregiver_gender: input.preferredCaregiverGender,
     budget_per_day: input.budgetPerDay ?? null,
+    // 정리에 실패했거나 AI 를 끄고 올린 요청은 두 칸을 함께 비워 둔다 —
+    // 조건만 있고 시각이 없거나 그 반대인 행이 생기지 않게 한다.
+    ai_conditions: input.aiConditions ?? null,
+    ai_analyzed_at: input.aiConditions ? new Date().toISOString() : null,
   };
 }
 

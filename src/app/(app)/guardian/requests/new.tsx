@@ -63,6 +63,7 @@ export default function CareRequestNewScreen() {
 
   const create = useCareRequestsStore((state) => state.create);
   const isSubmitting = useCareRequestsStore((state) => state.isSubmitting);
+  const isStructuring = useCareRequestsStore((state) => state.isStructuring);
   const errorMessage = useCareRequestsStore((state) => state.errorMessage);
   const clearError = useCareRequestsStore((state) => state.clearError);
 
@@ -158,7 +159,8 @@ export default function CareRequestNewScreen() {
       edges={['bottom']}
       footer={
         <AppButton
-          title="요청 등록"
+          // 정리에 몇 초가 걸리므로 무엇을 기다리는지 버튼이 그대로 말해 준다
+          title={isStructuring ? '요청 내용을 정리하는 중' : '요청 등록'}
           onPress={handleSubmit}
           loading={isSubmitting}
           disabled={isSubmitting}

@@ -51,6 +51,8 @@ function fromInput(id: string, guardianId: string, input: CareRequestInput): Car
     preferredCaregiverGender: input.preferredCaregiverGender,
     ...(input.budgetPerDay !== undefined ? { budgetPerDay: input.budgetPerDay } : {}),
     status: 'pending',
+    // AI 정리 결과는 요청과 함께 한 번만 저장한다. 나중에 다시 정리하려면 새 값을 덮어쓴다.
+    ...(input.aiConditions ? { aiConditions: input.aiConditions, aiAnalyzedAt: now } : {}),
     createdAt: now,
     updatedAt: now,
   };

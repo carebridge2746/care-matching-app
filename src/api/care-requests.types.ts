@@ -1,4 +1,5 @@
 import type {
+  AiCareConditions,
   CareRequest,
   CaregiverCareRequest,
   CareType,
@@ -34,6 +35,13 @@ export type CareRequestInput = {
   preferredCaregiverGender: CaregiverGenderPreference;
   /** 일당 예산(원) */
   budgetPerDay?: number;
+  /**
+   * AI 가 원문을 정리한 조건 (llmApi.structureCareRequest 의 결과).
+   *
+   * 없어도 요청은 그대로 만들어진다. 조건 정리는 요청을 더 잘 매칭하기 위한 것이지
+   * 요청을 올리기 위한 준비물이 아니므로, AI 호출 실패가 등록을 막지 않는다.
+   */
+  aiConditions?: AiCareConditions;
 };
 
 export type CareRequestsAdapter = {

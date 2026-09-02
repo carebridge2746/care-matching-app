@@ -20,10 +20,37 @@ import { liveMatchForRequest, useMatchHistoryStore } from '@/store/use-match-his
 import { usePatientsStore } from '@/store/use-patients-store';
 import { useRecommendationsStore } from '@/store/use-recommendations-store';
 import { Spacing } from '@/theme';
-import { CareTypeLabels, CaregiverGenderPreferenceLabels } from '@/types';
+import {
+  AiCarePlaceLabels,
+  AiConfidenceLabels,
+  CareTypeLabels,
+  CaregiverGenderPreferenceLabels,
+  hasAiConditions,
+  WeekdayLabels,
+  type AiSchedule,
+} from '@/types';
 
 /** 배점을 화면에서 다시 적지 않도록 계산해 둔다 */
 const TotalWeight = Object.values(MatchWeights).reduce((sum, weight) => sum + weight, 0);
+
+/**
+ * AI 가 읽어 낸 일정을 한 줄로 옮긴다.
+ * 항목이 하나도 없으면 빈 문자열을 돌려주고, 화면은 그 줄을 아예 그리지 않는다.
+ */
+function aiScheduleSummary(schedule: AiSchedule): string {
+  const parts = [
+    schedule.startDate ? formatPeriod(schedule.startDate, schedule.endDate) : null,
+    schedule.dailyStartTime && schedule.dailyEndTime
+      ? `매일 ${schedule.dailyStartTime} ~ ${schedule.dailyEndTime}`
+      : null,
+    schedule.weekdays.length > 0
+      ? schedule.weekdays.map((weekday) => WeekdayLabels[weekday]).join(', ')
+      : null,
+    schedule.note,
+  ];
+
+  return parts.filter(Boolean).join(' · ');
+}
 
 /**
  * 간병 요청 상세와 추천 간병인.
@@ -103,6 +130,7 @@ export default function GuardianRequestDetailScreen() {
   const isOpen = request.status === 'pending';
   // 살아 있는 매칭은 요청당 하나뿐이다. 취소된 이력은 '간병 진행' 화면에서 모아 본다.
   const liveMatch = liveMatchForRequest(matches, request.id);
+  const aiSchedule = request.aiConditions ? aiScheduleSummary(request.aiConditions.schedule) : '';
 
   return (
     <Screen
@@ -119,6 +147,68 @@ export default function GuardianRequestDetailScreen() {
         <AppText variant="title">{patient?.name ?? '환자 정보 없음'}</AppText>
         <StatusBadge tone={request.status} />
       </View>
+
+      {/*
+        AI 가 정리한 조건은 폼에서 고른 값을 대신하지 않는다. 매칭에 쓰이는 것은 위 카드의
+        조건이고, 이 카드는 "원문을 이렇게 읽었습니다"를 보여 주어 보호자가 빠진 내용을
+        알아차리게 하는 자리다. 그래서 나란히 두지 않고 아래에 따로 둔다.
+      */}
+      {request.aiConditions && hasAiConditions(request.aiConditions) ? (
+        <Card>
+          <AppText variant="heading">AI가 정리한 요청</AppText>
+          <AppText variant="caption" tone="secondary">
+            {AiConfidenceLabels[request.aiConditions.confidence]}
+            {request.aiAnalyzedAt ? ` · ${formatKoreanTimestamp(request.aiAnalyzedAt)}` : ''}
+          </AppText>
+
+          {request.aiConditions.location || request.aiConditions.carePlace !== 'unknown' ? (
+            <AppText variant="body">
+              {[
+                request.aiConditions.location,
+                request.aiConditions.carePlace !== 'unknown'
+                  ? AiCarePlaceLabels[request.aiConditions.carePlace]
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </AppText>
+          ) : null}
+
+          {request.aiConditions.careType.length > 0 ? (
+            <AppText variant="body" tone="secondary">
+              환자 상태: {request.aiConditions.careType.join(', ')}
+            </AppText>
+          ) : null}
+
+          {request.aiConditions.requiredSkills.length > 0 ? (
+            <AppText variant="body" tone="secondary">
+              필요 역량: {request.aiConditions.requiredSkills.join(', ')}
+            </AppText>
+          ) : null}
+
+          {aiSchedule ? (
+            <AppText variant="body" tone="secondary">
+              일정: {aiSchedule}
+            </AppText>
+          ) : null}
+
+          {request.aiConditions.budgetPerDay !== undefined ? (
+            <AppText variant="body" tone="secondary">
+              일당: {request.aiConditions.budgetPerDay.toLocaleString('ko-KR')}원
+            </AppText>
+          ) : null}
+
+          {request.aiConditions.additionalNotes ? (
+            <AppText variant="body" tone="secondary">
+              특이사항: {request.aiConditions.additionalNotes}
+            </AppText>
+          ) : null}
+
+          <AppText variant="caption" tone="tertiary">
+            정리한 내용이 실제와 다르면 위 요청 조건을 기준으로 매칭됩니다.
+          </AppText>
+        </Card>
+      ) : null}
 
       {liveMatch ? (
         <View style={styles.section}>

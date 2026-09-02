@@ -139,6 +139,12 @@ export type CareRequest = {
   matchedCaregiverId?: string;
   /** 간병인이 수락한 시각 */
   matchedAt?: string;
+  /**
+   * AI 가 원문을 정리한 조건. 아래 AiCareConditions 를 참고한다.
+   * 정리에 실패했거나 AI 를 끄고 올린 요청에는 없다 — 없다고 해서 요청이 덜 유효한 것은 아니다.
+   */
+  aiConditions?: AiCareConditions;
+  aiAnalyzedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -414,4 +420,85 @@ export type CareMatch = Match & {
 /** 로그인한 사용자에게 상대방은 누구인가 */
 export function counterpartOf(match: CareMatch, userId: string): MatchContact {
   return match.caregiverId === userId ? match.guardian : match.caregiver;
+}
+
+// --- AI 자연어 구조화 -----------------------------------------------------------
+
+/**
+ * 원문이 얼마나 분명했는지.
+ * 대부분을 추측해야 했다면 low 이며, 화면은 이때 "확인해 주세요" 안내를 함께 보여 준다.
+ */
+export type AiConfidence = 'high' | 'medium' | 'low';
+
+/** AI 가 읽어 낸 간병 장소. 판단할 근거가 없으면 'unknown' */
+export type AiCarePlace = CareType | 'unknown';
+
+export type AiSchedule = {
+  /** YYYY-MM-DD */
+  startDate?: string;
+  endDate?: string;
+  /** HH:MM */
+  dailyStartTime?: string;
+  dailyEndTime?: string;
+  /** 특정 요일만 필요한 경우. 매일이거나 언급이 없으면 비어 있다. */
+  weekdays: Weekday[];
+  /** 날짜로 옮기기 어려운 표현 그대로 ("퇴원할 때까지", "주 3회") */
+  note?: string;
+};
+
+/**
+ * 보호자가 적은 원문을 AI 가 정리한 조건.
+ *
+ * 폼에서 사람이 고른 값(CareRequest 의 컬럼들)을 대체하지 않는다. 두 값은 따로 보관하며,
+ * 어긋날 때 무엇이 사람의 선택이었는지 되짚을 수 있어야 하기 때문이다.
+ * 매칭 점수 계산(src/lib/matching.ts)도 지금은 사람이 고른 값만 본다.
+ *
+ * 저장 위치는 `care_requests.ai_conditions` (JSONB) 이고, 형태는 Edge Function 의
+ * supabase/functions/structure-care-request/schema.ts 가 강제한다.
+ */
+export type AiCareConditions = {
+  /** 시군구 단위 지역 */
+  location?: string;
+  carePlace: AiCarePlace;
+  /** 환자 상태와 필요한 간병 종류 ("치매", "거동 불편" …). 자유 문구다. */
+  careType: string[];
+  /** 원문에서 분명히 드러난 간병 역량. src/lib/care-options.ts 목록 안의 값만 들어온다. */
+  requiredSkills: string[];
+  schedule: AiSchedule;
+  genderPreference: CaregiverGenderPreference;
+  /** 하루 기준 예산(원) */
+  budgetPerDay?: number;
+  /** 위 항목에 담기지 않은 특이사항 */
+  additionalNotes?: string;
+  confidence: AiConfidence;
+};
+
+export const AiConfidenceLabels: Record<AiConfidence, string> = {
+  high: '원문에서 대부분 확인했습니다',
+  medium: '일부는 짐작해서 정리했습니다',
+  low: '원문만으로는 분명하지 않아 대부분 비워 두었습니다',
+};
+
+export const AiCarePlaceLabels: Record<AiCarePlace, string> = {
+  hospital: CareTypeLabels.hospital,
+  home: CareTypeLabels.home,
+  facility: CareTypeLabels.facility,
+  unknown: '장소 미확인',
+};
+
+/** 정리된 결과에 보여 줄 내용이 하나라도 있는지. 전부 비었으면 카드를 띄우지 않는다. */
+export function hasAiConditions(conditions: AiCareConditions): boolean {
+  const { location, careType, requiredSkills, schedule, budgetPerDay, additionalNotes } = conditions;
+
+  return Boolean(
+    location ||
+      careType.length > 0 ||
+      requiredSkills.length > 0 ||
+      schedule.startDate ||
+      schedule.dailyStartTime ||
+      schedule.weekdays.length > 0 ||
+      schedule.note ||
+      budgetPerDay !== undefined ||
+      additionalNotes
+  );
 }

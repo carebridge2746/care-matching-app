@@ -53,8 +53,8 @@ Supabase Edge Function의 secret으로만 설정합니다.
 
 ```
 src/
-├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests ·
-│                 #   caregiver · matching · match-history)마다 .mock.ts / .supabase.ts
+├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests · caregiver ·
+│                 #   matching · match-history · llm)마다 .mock.ts / .supabase.ts
 │                 #   두 구현을 두고 mode.ts 로 고른다
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
@@ -75,7 +75,16 @@ src/
 └── types/        # 도메인 타입
 ```
 
-`supabase/schema.sql`에 데이터베이스 스키마(테이블·RLS 정책·트리거)를 둡니다.
+```
+supabase/
+├── schema.sql    # 데이터베이스 스키마 (테이블 · RLS 정책 · 함수 · 트리거)
+└── functions/    # Edge Function (Deno). 앱이 직접 부를 수 없는 일 — LLM 호출 — 을 맡는다
+    ├── _shared/                  #   CORS·응답 헬퍼
+    └── structure-care-request/   #   자연어 요청 → 구조화된 조건 JSON
+```
+
+Edge Function은 앱과 다른 런타임(Deno)에서 돌아가므로 `tsconfig.json`과 ESLint 검사 대상에서
+빼 두었습니다. 검사와 배포는 Supabase CLI가 맡습니다.
 
 ## 디자인 원칙
 
@@ -386,6 +395,95 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 대상이 같은 간병 한 건이고, 어느 쪽에서 보는지는 `party` 하나로 갈립니다. 무엇을 보여 줄지
 (연락처, 환자 특이사항)는 화면이 아니라 어댑터가 정해서 내려줍니다.
 
+## AI 자연어 구조화
+
+```
+보호자가 적은 원문 → Edge Function(Claude) → 조건 JSON → care_requests.ai_conditions
+```
+
+보호자는 조건을 항목별로 고르기 전에 평소 말하듯 상황을 적습니다. 그 원문을 매칭이 쓸 수 있는
+모양으로 정리하는 것이 이 기능입니다. **사람이 고른 값을 대체하지는 않습니다** — 폼에서 고른
+조건과 AI가 읽어 낸 조건을 따로 보관하고, 매칭 점수(`src/lib/matching.ts`)는 지금도 사람이 고른
+값만 봅니다. 둘이 어긋날 때 무엇이 보호자의 선택이었는지 되짚을 수 있어야 하기 때문입니다.
+
+AI가 사람을 고르지 않는다는 원칙은 그대로입니다. AI는 **자연어를 조건으로 옮기는 일만** 하고,
+간병인 선정은 결정론적인 점수 계산이 합니다.
+
+### 무엇을 뽑는가
+
+| 항목 | 내용 |
+| --- | --- |
+| `location` | 시군구 단위 지역 |
+| `care_place` | 간병 장소 (`hospital` / `home` / `facility` / `unknown`) |
+| `care_type` | 환자 상태와 필요한 간병 종류 ("치매", "거동 불편" …) |
+| `required_skills` | `src/lib/care-options.ts` 목록 안의 역량만 |
+| `schedule` | 시작·종료일, 하루 시간대, 요일, 날짜로 옮기기 어려운 표현(`note`) |
+| `gender_preference` | 간병인 성별 선호 |
+| `budget_per_day` | 하루 기준 예산(원) |
+| `additional_notes` | 나머지 특이사항 |
+| `confidence` | 원문이 얼마나 분명했는지 (`high` / `medium` / `low`) |
+
+형태는 프롬프트로 부탁하지 않고 Claude의 structured outputs(`output_config.format`)로
+스키마에 묶습니다. 응답이 스키마를 벗어날 수 없으므로 앱에서 JSON 파싱 실패를 다루지 않아도 됩니다.
+역량·요일처럼 목록이 정해진 값은 enum으로 못박습니다 — '체위변경'과 '체위 변경'으로 갈리면
+매칭에서 같은 조건으로 볼 수 없기 때문입니다.
+
+프롬프트의 규칙은 세 가지입니다. 원문에 없는 내용을 지어내지 않을 것(모르면 비워 둘 것),
+사람을 고르거나 추천하지 않을 것, 이름·연락처·상세 주소 같은 개인 식별 정보를 옮기지 않을 것.
+
+### 왜 Edge Function을 거치는가
+
+앱은 LLM을 직접 부르지 않습니다. `EXPO_PUBLIC_` 환경 변수는 번들에 그대로 박히므로 API Key를
+둘 수 없고, 프롬프트와 스키마도 앱을 새로 배포하지 않고 고칠 수 있어야 하기 때문입니다.
+
+| 파일 | 역할 |
+| --- | --- |
+| `supabase/functions/structure-care-request/index.ts` | HTTP 진입점 — 입력 검증, 오류 응답 |
+| `supabase/functions/structure-care-request/schema.ts` | 결과 JSON 스키마와 값 검증 |
+| `supabase/functions/structure-care-request/prompt.ts` | 시스템 프롬프트 |
+| `supabase/functions/structure-care-request/claude.ts` | Claude 호출과 오류 매핑 |
+| `src/api/llm.{types,mock,supabase}.ts` | 앱 쪽 어댑터 (Mock / Edge Function) |
+
+함수는 데이터베이스에 쓰지 않고 정리 결과만 돌려줍니다. 저장은 요청을 만드는 쪽
+(`src/store/use-care-requests-store.ts`)이 요청 행과 **함께 한 번에** 합니다. 요청을 만든 뒤에
+조건을 따로 붙이면, 두 번째 단계가 실패했을 때 조건이 빈 요청이 남습니다.
+
+**AI 호출이 실패해도 요청 등록은 그대로 진행됩니다.** 조건 정리는 매칭을 돕는 보조 단계이지
+요청을 올리기 위한 준비물이 아닙니다. 실패를 오류로 띄우면 요청이 저장되지 않은 것처럼 읽혀
+보호자가 같은 내용을 다시 적게 됩니다.
+
+### 켜는 방법
+
+```bash
+# 1) API Key 는 Edge Function 의 secret 으로만 둡니다 (.env 에 넣지 않습니다)
+npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+
+# 2) 함수 배포 (로그인한 사용자만 부를 수 있도록 JWT 검증은 기본값 그대로 둡니다)
+npx supabase functions deploy structure-care-request
+
+# 3) 앱에서 live 로 전환하고 개발 서버 재시작
+#    .env → EXPO_PUBLIC_LLM_MODE=live
+```
+
+`EXPO_PUBLIC_LLM_MODE=mock`이면 `src/api/llm.mock.ts`가 키워드만으로 원문을 훑습니다.
+문맥을 읽지는 못하지만 화면 흐름 — 정리 결과가 요청에 붙어 저장되고, 상세 화면에 보이고,
+실패해도 등록이 막히지 않는 것 — 은 Supabase 없이도 그대로 확인할 수 있습니다.
+
+인증 모드와 따로 두는 이유는, Supabase로 붙였더라도 함수 배포나 키 설정이 끝나기 전에는
+AI 없이 굴러가야 하기 때문입니다.
+
+### 모델과 비용
+
+| 항목 | 값 |
+| --- | --- |
+| 모델 | `claude-opus-5` |
+| 사고 강도 | `output_config.effort: 'low'` — 짧은 추출 작업이고 보호자가 기다리는 시간입니다 |
+| 최대 토큰 | 8000 (출력 JSON은 짧지만 사고 토큰도 이 한도에 함께 잡힙니다) |
+| 안전 거절 | 서버측 fallback을 켜 두어, 분류기가 거절하면 같은 호출 안에서 다른 모델이 이어받습니다 |
+
+원문 길이는 2000자로 제한합니다. LLM 호출은 돈이 나가는 경로이므로 로그인하지 않은 호출과
+지나치게 긴 입력은 함수 앞단에서 막습니다.
+
 ## 데이터 모델
 
 ```
@@ -398,7 +496,7 @@ profiles(간병인)  1 ──< matches
 | --- | --- |
 | `profiles` | 이름, 이용 유형, 연락처 (`auth.users`와 1:1) |
 | `patients` | 간병 대상자. 출생연도·성별·질환·거동/인지 상태·특이사항 |
-| `care_requests` | 간병 요청. 자연어 원문 + 장소·지역·기간·시간대·필요 역량·예산·상태 |
+| `care_requests` | 간병 요청. 자연어 원문 + 장소·지역·기간·시간대·필요 역량·예산·상태, AI가 정리한 조건(`ai_conditions`) |
 | `caregiver_profiles` | 간병인의 성별·경력·자격·역량·간병 장소·근무 지역·희망 일당·자기소개 (`profiles`와 1:1) |
 | `caregiver_availability` | 근무 가능한 요일·시간대. 표의 칸 하나가 한 행 |
 | `matches` | 수락 이후의 간병 한 건. 상태와 수락·시작·종료·취소 시각, 취소한 사람과 사유 |
@@ -481,3 +579,6 @@ profiles(간병인)  1 ──< matches
 | 10 | 노쇼 · 대체 간병인 추천 | 예정 |
 | 11 | 관리자 기능 | 예정 |
 | 12 | 전체 테스트 및 UI 개선 | 예정 |
+
+페이즈 표에 없는 항목: **AI 자연어 구조화**(Edge Function + `llm` 어댑터)는 구현을 마쳤습니다.
+`EXPO_PUBLIC_LLM_MODE=live` 로 켜며, 자세한 내용은 위의 'AI 자연어 구조화' 절에 있습니다.
