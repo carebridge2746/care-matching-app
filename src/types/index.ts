@@ -581,3 +581,126 @@ export function formatRating(rating: UserRating): string {
     ? `${rating.ratingAvg.toFixed(1)} (${rating.reviewCount}건)`
     : '아직 받은 후기 없음';
 }
+
+// --- 교육과 수료 ---------------------------------------------------------------
+
+/**
+ * 교육 과정 한 건.
+ *
+ * 과정 내용은 앱이 아니라 데이터베이스에 있다. 교육 자료는 앱 배포와 상관없이
+ * 늘어나고 고쳐지는 것이라, 번들에 박아 두면 문장 하나 고치는 데 심사를 기다려야 한다.
+ *
+ * 목록에 필요한 만큼만 담는다. 교육 내용(lessons)과 퀴즈 문항은 과정을 열 때 따로 받는다.
+ */
+export type TrainingCourse = {
+  id: string;
+  /** 사람이 읽을 수 있는 과정 이름(dementia-care …). 시연 데이터와 스키마가 이 값으로 짝을 맞춘다. */
+  slug: string;
+  title: string;
+  summary: string;
+  /**
+   * 수료하면 프로필에 함께 보이는 자격 이름. 없는 과정도 있다.
+   * 간병인이 직접 고른 자격(CaregiverProfile.certifications)과 섞지 않는다 —
+   * 한쪽은 본인이 신고한 값이고 이쪽은 앱이 확인한 값이라, 합쳐 두면 어느 쪽이 확인된 것인지 알 수 없다.
+   */
+  certificationLabel?: string;
+  /** 교육 내용을 읽는 데 걸리는 대략의 시간(분) */
+  estimatedMinutes: number;
+  /** 합격 기준. 맞힌 문항 비율(0~100)이 이 값 이상이어야 수료한다. */
+  passScore: number;
+  /** 퀴즈 문항 수. 세어서 내려오는 값이라 저장하지 않는다. */
+  questionCount: number;
+};
+
+/** 교육 내용 한 단원 */
+export type TrainingLesson = {
+  id: string;
+  /** 1부터. 읽는 순서다. */
+  order: number;
+  title: string;
+  body: string;
+  /** 이 단원에서 꼭 기억할 것. 본문을 끝까지 읽지 못해도 이것만은 남는다. */
+  keyPoints: string[];
+};
+
+export type TrainingCourseDetail = TrainingCourse & {
+  lessons: TrainingLesson[];
+};
+
+/**
+ * 퀴즈 문항.
+ *
+ * 정답이 들어 있지 않다. 채점은 화면이 아니라 저장소가 한다 —
+ * 앱이 "맞혔습니다"라고 보낸 값을 믿으면 아무나 수료증을 만들 수 있다.
+ */
+export type QuizQuestion = {
+  id: string;
+  order: number;
+  question: string;
+  /** 보기. 배열 순서가 곧 보기 번호이며 번호는 1부터 센다. */
+  choices: string[];
+};
+
+/** 한 문항에 고른 답. choiceIndex 는 1부터다. */
+export type QuizAnswer = {
+  questionId: string;
+  choiceIndex: number;
+};
+
+/** 채점 결과 한 문항 */
+export type QuizQuestionResult = {
+  questionId: string;
+  /** 고르지 않고 낸 문항에는 없다 */
+  selectedIndex?: number;
+  answerIndex: number;
+  isCorrect: boolean;
+  /** 왜 그 답인지. 틀린 문항뿐 아니라 맞은 문항에도 보여 준다 — 찍어서 맞힌 것을 배운 것으로 두지 않는다. */
+  explanation: string;
+};
+
+/**
+ * 응시 한 번의 결과.
+ *
+ * 점수(0~100)만 남기지 않고 맞힌 개수와 전체 문항 수를 함께 남긴다.
+ * 나중에 문항이 늘거나 줄면 비율만으로는 그때 무엇을 풀었는지 되짚을 수 없다.
+ */
+export type QuizAttempt = {
+  id: string;
+  courseId: string;
+  correctCount: number;
+  questionCount: number;
+  /** 0~100 */
+  score: number;
+  passed: boolean;
+  createdAt: string;
+};
+
+/**
+ * 수료 한 건.
+ *
+ * 과정당 한 줄만 남는다. 이미 수료한 과정을 다시 풀어 더 높은 점수를 받아도
+ * 수료일은 처음 합격한 날 그대로다 — 수료는 "언제 이 교육을 마쳤는가"의 기록이라
+ * 나중 응시로 날짜가 밀리면 이력으로서 뜻을 잃는다.
+ */
+export type TrainingCompletion = {
+  id: string;
+  courseId: string;
+  /** 수료를 만든 응시 */
+  attemptId: string;
+  completedAt: string;
+};
+
+/** 퀴즈를 내고 받은 결과 */
+export type QuizGrade = {
+  attempt: QuizAttempt;
+  results: QuizQuestionResult[];
+  /** 이번 응시로 처음 수료했는지. 이미 수료한 과정을 다시 풀어 붙으면 false 다. */
+  isNewCompletion: boolean;
+  /** 수료했다면 그 시각. 이번에 붙었든 전에 붙었든 처음 합격한 날이다. */
+  completedAt?: string;
+};
+
+/** '5문항 중 4문항 정답 · 80점' */
+export function formatQuizScore(attempt: Pick<QuizAttempt, 'correctCount' | 'questionCount' | 'score'>): string {
+  return `${attempt.questionCount}문항 중 ${attempt.correctCount}문항 정답 · ${attempt.score}점`;
+}

@@ -226,6 +226,93 @@ export type PublicReviewRow = {
   reviewer_name: string;
 };
 
+/**
+ * public.published_courses 뷰의 행.
+ *
+ * 과정 표에는 문항 수가 없다. 세어서 붙이는 값이라 저장하지 않고 뷰가 그때그때 센다 —
+ * 평균 별점을 user_ratings 뷰가 세는 것과 같은 이유다.
+ */
+export type PublishedCourseRow = {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  certification_label: string | null;
+  estimated_minutes: number;
+  pass_score: number;
+  display_order: number;
+  question_count: number;
+};
+
+export type TrainingLessonRow = {
+  id: string;
+  course_id: string;
+  display_order: number;
+  title: string;
+  body: string;
+  key_points: string[];
+  created_at: string;
+};
+
+/**
+ * public.course_quiz() 가 돌려주는 행.
+ *
+ * 정답(answer_index)과 해설은 담기지 않는다. 문항 표(training_quiz_questions)에는
+ * select 정책이 아예 없어서 이 함수 말고는 읽을 창구가 없다.
+ */
+export type QuizQuestionRow = {
+  id: string;
+  display_order: number;
+  question: string;
+  choices: string[];
+};
+
+export type QuizAttemptRow = {
+  id: string;
+  course_id: string;
+  caregiver_id: string;
+  correct_count: number;
+  question_count: number;
+  score: number;
+  passed: boolean;
+  created_at: string;
+};
+
+export type TrainingCompletionRow = {
+  id: string;
+  course_id: string;
+  caregiver_id: string;
+  attempt_id: string;
+  completed_at: string;
+};
+
+/** public.submit_quiz() 에 보내는 답 한 줄. choice_index 는 1부터다. */
+export type QuizAnswerInput = {
+  question_id: string;
+  choice_index: number;
+};
+
+/**
+ * public.submit_quiz() 가 돌려주는 JSON.
+ *
+ * 채점 결과와 응시 기록을 한 번에 받는다. 나눠서 부르면 채점과 조회 사이에
+ * 다른 응시가 끼어들 수 있고, 화면은 방금 낸 그 답의 결과를 보여 줘야 한다.
+ */
+export type QuizGradeRow = {
+  attempt: QuizAttemptRow;
+  results: {
+    question_id: string;
+    /** 고르지 않고 낸 문항은 null */
+    selected_index: number | null;
+    answer_index: number;
+    is_correct: boolean;
+    explanation: string;
+  }[];
+  is_new_completion: boolean;
+  /** 수료하지 않았으면 null */
+  completed_at: string | null;
+};
+
 /** 상태 표기 변환 — 저장할 때 */
 export const CareRequestStatusToRow: Record<CareRequestStatus, CareRequestStatusRow> = {
   pending: 'pending',
@@ -354,6 +441,38 @@ export type Database = {
         Update: Partial<ReviewRow>;
         Relationships: [];
       };
+      /**
+       * 교육 내용. 공개된 과정의 것만 읽을 수 있고 쓰는 창구는 없다.
+       *
+       * 문항 표(training_quiz_questions)는 일부러 여기에 없다. 정답이 들어 있는 표라
+       * 앱이 직접 읽을 수 없어야 하고, 타입에 두지 않으면 실수로 부르는 코드가
+       * 컴파일 단계에서 막힌다. 문항은 course_quiz() 로만 받는다.
+       */
+      training_lessons: {
+        Row: TrainingLessonRow;
+        Insert: Omit<TrainingLessonRow, 'id' | 'created_at'> &
+          Partial<Pick<TrainingLessonRow, 'id' | 'created_at'>>;
+        Update: Partial<TrainingLessonRow>;
+        Relationships: [];
+      };
+      /**
+       * 응시와 수료도 읽기만 한다.
+       * 만드는 일은 submit_quiz() 만 할 수 있다 (두 표 모두 insert 정책이 없다).
+       */
+      training_quiz_attempts: {
+        Row: QuizAttemptRow;
+        Insert: Omit<QuizAttemptRow, 'id' | 'created_at'> &
+          Partial<Pick<QuizAttemptRow, 'id' | 'created_at'>>;
+        Update: Partial<QuizAttemptRow>;
+        Relationships: [];
+      };
+      training_completions: {
+        Row: TrainingCompletionRow;
+        Insert: Omit<TrainingCompletionRow, 'id' | 'completed_at'> &
+          Partial<Pick<TrainingCompletionRow, 'id' | 'completed_at'>>;
+        Update: Partial<TrainingCompletionRow>;
+        Relationships: [];
+      };
     };
     Views: {
       /** 간병인이 읽을 수 있는 유일한 요청 창구. 대기중 요청과 본인이 수락한 요청만 담긴다. */
@@ -369,6 +488,11 @@ export type Database = {
       /** 사람별 평균 별점과 후기 수. 코멘트가 없어 누구에게나 열어도 된다. */
       user_ratings: {
         Row: UserRatingRow;
+        Relationships: [];
+      };
+      /** 공개된 교육 과정과 그 문항 수. 정답은 담기지 않아 누구에게나 열어도 된다. */
+      published_courses: {
+        Row: PublishedCourseRow;
         Relationships: [];
       };
     };
@@ -418,6 +542,24 @@ export type Database = {
       public_reviews: {
         Args: { subject_id: string };
         Returns: PublicReviewRow[];
+      };
+      /**
+       * 이 과정의 퀴즈 문항. 정답과 해설은 내려오지 않는다.
+       *
+       * 인자 이름이 course_id 가 아닌 것은, 함수 안에서 문항 표의 course_id 컬럼과
+       * 이름이 겹치면 어느 쪽인지 가려야 하기 때문이다. submit_quiz 도 같은 이유다.
+       */
+      course_quiz: {
+        Args: { target_course: string };
+        Returns: QuizQuestionRow[];
+      };
+      /**
+       * 퀴즈를 내고 채점받는다.
+       * 점수와 합격 여부는 앱이 정하지 않는다 — 함수가 정답과 맞춰 보고 직접 매긴다.
+       */
+      submit_quiz: {
+        Args: { target_course: string; submitted_answers: QuizAnswerInput[] };
+        Returns: QuizGradeRow;
       };
     };
     Enums: Record<string, never>;

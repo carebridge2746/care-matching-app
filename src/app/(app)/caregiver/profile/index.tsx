@@ -14,11 +14,13 @@ import {
   type ChoiceOption,
 } from '@/components/common';
 import { ReviewList } from '@/components/care';
+import { CompletionList } from '@/components/training';
 import { CommonCareSkills, CommonCertifications } from '@/lib/care-options';
 import { validateAtLeastOne, validateBudget, validateYearsOfExperience } from '@/lib/validation';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useReviewsStore } from '@/store/use-reviews-store';
+import { useTrainingStore } from '@/store/use-training-store';
 import { Spacing } from '@/theme';
 import { CareTypeLabels, GenderLabels, type CaregiverProfile, type CareType, type Gender } from '@/types';
 
@@ -123,6 +125,40 @@ function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
   );
 }
 
+/**
+ * 수료한 교육.
+ *
+ * 아래 '보유 자격'과 한 화면에 있지만 같은 칸에 넣지 않는다.
+ * 보유 자격은 간병인이 직접 고른 값이고 이쪽은 퀴즈로 확인된 값이라,
+ * 섞어 두면 보호자가 무엇이 확인된 것인지 알 수 없게 된다.
+ */
+function CompletedTraining({ caregiverId }: { caregiverId: string }) {
+  const router = useRouter();
+  const courses = useTrainingStore((state) => state.courses);
+  const completions = useTrainingStore((state) => state.completions);
+  const load = useTrainingStore((state) => state.load);
+
+  useEffect(() => {
+    void load(caregiverId);
+  }, [caregiverId, load]);
+
+  return (
+    <View style={styles.section}>
+      <AppText variant="heading">수료한 교육</AppText>
+      <CompletionList
+        courses={courses}
+        completions={completions}
+        emptyMessage="교육을 마치면 수료한 과정이 여기에 쌓입니다."
+      />
+      <AppButton
+        title="교육 과정 보기"
+        variant="outline"
+        onPress={() => router.push('/caregiver/training')}
+      />
+    </View>
+  );
+}
+
 function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
   const router = useRouter();
 
@@ -204,6 +240,8 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
       </View>
 
       <ReceivedReviews caregiverId={caregiverId} />
+
+      <CompletedTraining caregiverId={caregiverId} />
 
       <View style={styles.section}>
         <AppText variant="heading">기본 정보</AppText>

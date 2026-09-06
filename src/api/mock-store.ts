@@ -1,5 +1,13 @@
 import { readJson, writeJson } from '@/lib/storage';
-import type { CareRequest, CaregiverProfile, Match, Patient, Review } from '@/types';
+import type {
+  CareRequest,
+  CaregiverProfile,
+  Match,
+  Patient,
+  QuizAttempt,
+  Review,
+  TrainingCompletion,
+} from '@/types';
 
 /**
  * Mock 모드의 로컬 저장소.
@@ -18,6 +26,8 @@ const CareRequestsKey = 'careapp.mock.care-requests';
 const CaregiverProfilesKey = 'careapp.mock.caregiver-profiles';
 const MatchesKey = 'careapp.mock.matches';
 const ReviewsKey = 'careapp.mock.reviews';
+const QuizAttemptsKey = 'careapp.mock.quiz-attempts';
+const TrainingCompletionsKey = 'careapp.mock.training-completions';
 
 /** 어댑터가 흉내 내는 네트워크 지연. 화면의 로딩 표시까지 확인하기 위한 값이다. */
 export const NetworkDelayMs = 300;
@@ -69,6 +79,35 @@ export async function loadReviews(): Promise<Review[]> {
 
 export async function saveReviews(reviews: Review[]): Promise<void> {
   await writeJson(ReviewsKey, reviews);
+}
+
+/**
+ * 퀴즈 응시와 수료.
+ *
+ * 도메인 타입(QuizAttempt · TrainingCompletion)에는 "누구의 것인지"가 없다.
+ * 앱에서는 언제나 내 것만 보기 때문이고, Supabase 쪽에서는 정책이 그 일을 대신한다.
+ * 여기서는 모든 사용자가 한 저장소를 나눠 쓰므로 저장할 때만 주인을 함께 적어 둔다.
+ */
+export type StoredQuizAttempt = QuizAttempt & { caregiverId: string };
+export type StoredTrainingCompletion = TrainingCompletion & { caregiverId: string };
+
+export async function loadQuizAttempts(): Promise<StoredQuizAttempt[]> {
+  return (await readJson<StoredQuizAttempt[]>(QuizAttemptsKey)) ?? [];
+}
+
+export async function saveQuizAttempts(attempts: StoredQuizAttempt[]): Promise<void> {
+  await writeJson(QuizAttemptsKey, attempts);
+}
+
+/** 수료는 과정당 한 줄만 남는다. 다시 합격해도 줄이 늘지 않고 날짜도 그대로다. */
+export async function loadTrainingCompletions(): Promise<StoredTrainingCompletion[]> {
+  return (await readJson<StoredTrainingCompletion[]>(TrainingCompletionsKey)) ?? [];
+}
+
+export async function saveTrainingCompletions(
+  completions: StoredTrainingCompletion[]
+): Promise<void> {
+  await writeJson(TrainingCompletionsKey, completions);
 }
 
 export async function loadCaregiverProfiles(): Promise<CaregiverProfile[]> {

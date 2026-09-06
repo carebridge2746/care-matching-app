@@ -9,7 +9,7 @@
 
 ```
 보호자: 간병 요청(자연어) → AI 분석/구조화 → 점수 기반 매칭 → 간병인 추천 → 매칭 → 간병 → 상호 평가
-간병인: 프로필/역량/자격/가능 시간 등록 → 요청 수락 → 간병 → 평가 확인
+간병인: 프로필/역량/자격/가능 시간 등록 → 교육 수료 → 요청 수락 → 간병 → 평가 확인
 관리자: 사용자·요청·매칭·노쇼·교육·평가 관리
 ```
 
@@ -54,22 +54,23 @@ Supabase Edge Function의 secret으로만 설정합니다.
 ```
 src/
 ├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests · caregiver ·
-│                 #   matching · match-history · reviews · llm)마다 .mock.ts / .supabase.ts
-│                 #   두 구현을 두고 mode.ts 로 고른다
+│                 #   matching · match-history · reviews · training · llm)마다
+│                 #   .mock.ts / .supabase.ts 두 구현을 두고 mode.ts 로 고른다
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
 │   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
 │   └── (app)/        # 로그인 전용 — guardian / caregiver / admin
 │       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성) · matches(간병 진행)
 │       └── caregiver/ #   홈 · profile · availability · requests(목록·상세·수락) ·
-│                      #   accepted(수락한 간병과 진행 상황)
+│                      #   accepted(수락한 간병과 진행 상황) · training(교육·퀴즈·수료)
 ├── components/
 │   ├── auth/     # 회원가입 유형 선택 카드
 │   ├── care/     # 간병 요청 카드 등 간병 도메인 UI
 │   ├── common/   # 화면 전반에서 재사용하는 UI (AppText, AppButton, Card, Screen, TextField 등)
-│   └── home/     # 유형별 홈 화면의 공통 골격
+│   ├── home/     # 유형별 홈 화면의 공통 골격
+│   └── training/ # 교육 과정 카드, 단원, 퀴즈와 채점 결과
 ├── lib/          # 라우트 매핑, 입력 검증, 날짜·가능 시간 처리, 매칭 점수 계산,
-│                 #   개인정보 가리기, 공통 선택지 목록, 저장소 헬퍼
+│                 #   개인정보 가리기, 공통 선택지 목록, 교육 진행 상황, 저장소 헬퍼
 ├── store/        # Zustand 상태 저장소
 ├── theme/        # 디자인 토큰 (색상, 타이포, 여백, 상태 색상)
 └── types/        # 도메인 타입
@@ -456,6 +457,85 @@ MVP 시연 중에는 **Authentication → Sign In / Providers → Email**에서 
 (`StarRating`). 코멘트는 비워도 됩니다 — 한 줄이라도 적게 하려고 입력을 막으면 대부분은
 아무것도 남기지 않고 화면을 닫습니다. 별점만이라도 쌓이는 편이 낫습니다.
 
+## 교육과 수료 (Phase 9)
+
+```
+교육 내용 읽기 → 퀴즈 제출 → 서버가 채점 → 합격이면 수료 (과정당 한 번, 처음 합격한 날)
+```
+
+간병인이 교육 내용을 읽고 퀴즈를 풀어 수료를 남깁니다. 수료는 보호자가 간병인을 고를 때
+근거가 될 기록이므로, **앱이 "맞혔습니다"를 보내는 창구를 두지 않았습니다.**
+
+| 규칙 | 지키는 곳 |
+| --- | --- |
+| 정답은 앱으로 내려가지 않는다 | `training_quiz_questions` 에 `select` 정책 없음 · `course_quiz()` 가 정답을 빼고 내보낸다 |
+| 채점과 합격 판정은 서버가 한다 | `submit_quiz()` |
+| 응시·수료 기록을 앱이 직접 만들 수 없다 | 두 표에 `insert` 정책 없음 |
+| 수료는 과정당 한 줄, 날짜는 처음 합격한 날 | `unique (course_id, caregiver_id)` + `on conflict do nothing` |
+| 고르지 않은 문항은 틀린 것으로 센다 | `submit_quiz()` 가 앱이 보낸 답이 아니라 **과정의 문항**을 기준으로 센다 |
+
+마지막 줄이 중요합니다. 채점의 분모는 제출된 답의 개수가 아니라 그 과정의 문항 수입니다.
+답을 적게 보내서 분모를 줄이는 일이 없어야 하기 때문입니다.
+
+### 교육 내용을 데이터베이스에 두는 이유
+
+과정·단원·문항은 앱 번들이 아니라 `training_courses` / `training_lessons` /
+`training_quiz_questions` 에 있습니다. 교육 자료는 앱 배포와 상관없이 늘어나고 고쳐지는
+것이라, 번들에 박아 두면 문장 하나 다듬는 데 심사를 기다려야 하고 결국 아무도 고치지 않습니다.
+
+Mock 모드가 읽는 사본은 `src/api/training.demo.ts` 에 같은 식별자로 있습니다
+(`auth.mock.ts` 의 시연 계정, `caregiver.demo.ts` 의 시연 프로필과 같은 자리입니다).
+내용을 고칠 때는 두 곳을 함께 고칩니다. 식별자를 바꾸면 그 과정을 수료한 기록이 과정을 잃으므로
+내용만 고치고 식별자는 그대로 둡니다.
+
+정답이 Mock 사본에는 함께 들어 있습니다. 감출 수 없는 것은 Mock 의 한계이지 계약의 예외가
+아닙니다 — 두 구현 모두 앱이 보낸 답만 받고 점수는 스스로 매깁니다.
+
+### 누가 무엇을 보는가
+
+| 창구 | 하는 일 |
+| --- | --- |
+| `public.published_courses` (뷰) | 공개된 과정과 문항 수. 문항·정답이 없어 누구에게나 열어도 된다 |
+| `training_lessons` (테이블) | 공개된 과정의 교육 내용 |
+| `public.course_quiz()` (함수) | 퀴즈 문항. 정답(`answer_index`)과 해설은 빼고 내보낸다 |
+| `public.submit_quiz()` (함수) | 채점하고, 붙었으면 수료를 만든다 |
+| `training_quiz_attempts` · `training_completions` | 본인 것만 조회. 쓰기 정책은 없다 |
+
+문항 수(`question_count`)는 과정 표의 컬럼이 아니라 뷰가 그때그때 셉니다. 적어 두면 문항을
+늘릴 때마다 두 값을 함께 고쳐야 하고, 어긋난 값은 아무도 알아차리지 못합니다 —
+평균 별점을 `user_ratings` 뷰가 세는 것과 같은 이유입니다.
+
+### 다시 풀 수 있습니다
+
+응시 횟수에 제한을 두지 않았습니다. 이 퀴즈는 걸러내기 위한 시험이 아니라 배우게 하려는
+것이고, 틀린 문항은 정답과 해설을 함께 돌려주므로 다시 푸는 것 자체가 교육입니다.
+맞힌 문항에도 해설을 보여 줍니다 — 찍어서 맞힌 것을 배운 것으로 두지 않기 위해서입니다.
+
+떨어졌을 때는 "불합격"으로 끝내지 않고 몇 점이 모자랐는지를 함께 적습니다.
+
+### 수료와 '보유 자격'을 섞지 않습니다
+
+프로필의 **보유 자격**은 간병인이 직접 고른 값이고, **수료**는 앱이 퀴즈로 확인한 값입니다.
+한 칸에 합쳐 두면 보호자가 무엇이 확인된 것인지 알 수 없게 되므로 화면에서도 따로 보여 줍니다.
+
+수료를 보호자에게 보여 주는 일과 매칭 점수 반영은 아직 열지 않았습니다. 점수에 넣지 않는
+이유는 별점과 같습니다 — 교육을 아직 못 들은 새 간병인이 계속 아래로 밀리면 첫 매칭을
+잡지 못합니다. 추천 후보(`recommendation_candidates()`)에 얹는 일은 반환 컬럼이 바뀌는
+작업이라 Phase 11에서 함께 다룹니다.
+
+### 화면
+
+| 화면 | 하는 일 |
+| --- | --- |
+| `/caregiver/training` | 과정 목록. 아직 안 들은 과정이 위, 수료한 과정이 아래 |
+| `/caregiver/training/[id]` | 한 화면 안에서 교육 내용 → 퀴즈 → 채점 결과로 이어진다 |
+| `/caregiver/profile` | 수료한 교육 (보유 자격과는 다른 칸) |
+| `/caregiver` (홈) | 수료 개수와 남은 과정 |
+
+과정 상세를 세 화면으로 나누지 않은 이유는, 퀴즈를 풀다가 내용을 다시 보려는 사람이 매번
+뒤로 갔다 와야 하기 때문입니다. 퀴즈는 문항을 한 화면에 모두 펼칩니다 — 한 문항씩 넘기면
+앞 문항을 고쳐 볼 수 없고 몇 개나 남았는지도 보이지 않습니다.
+
 ## AI 자연어 구조화
 
 ```
@@ -551,6 +631,11 @@ AI 없이 굴러가야 하기 때문입니다.
 profiles(보호자)  1 ──< patients(환자)  1 ──< care_requests(간병 요청)  1 ──< matches(매칭)
 profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availability
 profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최대 2건)
+
+training_courses  1 ──< training_lessons          (읽는 내용)
+                  1 ──< training_quiz_questions   (푸는 문항 · 정답이 들어 있다)
+                  1 ──< training_quiz_attempts    (응시할 때마다 한 줄)
+                  1 ──< training_completions      (사람당 한 줄, 처음 합격한 날)
 ```
 
 | 테이블 | 내용 |
@@ -562,6 +647,11 @@ profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최�
 | `caregiver_availability` | 근무 가능한 요일·시간대. 표의 칸 하나가 한 행 |
 | `matches` | 수락 이후의 간병 한 건. 상태와 수락·시작·종료·취소 시각, 취소한 사람과 사유 |
 | `reviews` | 끝난 간병에 대한 상호 평가. 별점과 후기, 매칭당 사람마다 한 줄 |
+| `training_courses` | 교육 과정. 제목·요약·소요 시간·합격 기준·수료 시 표시할 자격 이름 |
+| `training_lessons` | 과정의 단원. 본문과 '기억할 것' |
+| `training_quiz_questions` | 퀴즈 문항·보기·정답·해설. `select` 정책이 없어 앱은 읽지 못한다 |
+| `training_quiz_attempts` | 응시 한 번의 결과. 맞힌 개수·그때의 문항 수·점수·합격 여부 |
+| `training_completions` | 수료. 사람마다 과정당 한 줄, 날짜는 처음 합격한 날 |
 
 간병인 프로필은 `profiles.id`를 그대로 기본키로 씁니다. 한 사람당 프로필이 하나뿐이라
 별도 식별자가 필요 없습니다. 가능 시간을 jsonb 한 덩어리가 아니라 칸 단위 행으로 둔 것은
@@ -587,6 +677,7 @@ profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최�
 | 보호자 | 본인이 등록한 환자·요청만 조회/등록/수정. 삭제는 환자, 그리고 아직 매칭되지 않은(`pending`) 요청만 |
 | 간병인 | `patients`·`care_requests`에 직접 접근 불가 (아래 창구로만 다룬다). 본인의 `caregiver_profiles`·`caregiver_availability`는 조회/등록/수정 |
 | 당사자 두 사람 | 본인이 낀 `matches`와 자기가 쓰거나 받은 `reviews`는 **조회만**. 만들고 바꾸는 일은 함수만 할 수 있다 |
+| 로그인한 사용자 | 공개된 `training_courses`·`training_lessons` 조회. 본인의 응시·수료 기록은 **조회만** |
 | 관리자 | `patients`·`care_requests`·`matches`·`reviews` 접근 불가 |
 
 요청 행에서 `matched_caregiver_id`·`matched_at`은 앱이 아예 쓸 수 없습니다. RLS 정책은
@@ -606,6 +697,8 @@ profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최�
 | `public.start_care()` · `complete_care()` · `cancel_match()` (함수) | 매칭과 요청 상태를 함께 옮긴다 |
 | `public.create_review()` (함수) | 끝난 간병에 후기를 남긴다. 피평가자는 함수가 정한다 |
 | `public.user_ratings` (뷰) · `public.public_reviews()` (함수) | 평균 별점과, 작성자를 가린 후기 목록 |
+| `public.published_courses` (뷰) · `public.course_quiz()` (함수) | 공개된 교육 과정과, 정답을 뺀 퀴즈 문항 |
+| `public.submit_quiz()` (함수) | 퀴즈를 채점하고 붙었으면 수료를 만든다. 점수는 앱이 정하지 않는다 |
 
 두 창구 모두 호출한 사람이 간병인인지 `public.is_caregiver()` 로 데이터베이스가 직접 확인합니다.
 정책이나 뷰 안에서 `profiles`를 그대로 조회하면 재귀가 생기므로 `security definer` 함수로 감쌌습니다.
@@ -637,7 +730,7 @@ profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최�
 | 6 | 매칭 알고리즘 · 추천 간병인 (양방향) | 완료 |
 | 7 | 매칭 이력(`matches`) · 간병 진행 · 취소와 재매칭 | 완료 |
 | 8 | 후기/평가 · 신뢰도 반영 | 완료 |
-| 9 | 교육 · 퀴즈 · 수료 | 예정 |
+| 9 | 교육 · 퀴즈 · 수료 | 완료 |
 | 10 | 노쇼 · 대체 간병인 추천 | 예정 |
 | 11 | 관리자 기능 | 예정 |
 | 12 | 전체 테스트 및 UI 개선 | 예정 |

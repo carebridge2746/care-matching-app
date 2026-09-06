@@ -1381,3 +1381,780 @@ grant execute on function public.recommendation_candidates(uuid) to authenticate
 --     신고와 운영자 삭제는 Phase 11(관리자)에서 별도 창구로 다룬다.
 --   점수 반영: 별점을 매칭 점수에 넣을지, 넣는다면 몇 건부터 얼마나 반영할지는
 --     후기가 쌓인 뒤에 정한다. 지금은 화면에 보여 주기만 한다.
+
+-- ===========================================================================
+-- Phase 9 — 교육 · 퀴즈 · 수료
+-- ===========================================================================
+--
+-- 간병인이 교육 내용을 읽고 퀴즈를 풀어 수료를 남긴다.
+--
+--   training_courses 1 ──< training_lessons        (읽는 내용)
+--                    1 ──< training_quiz_questions (푸는 문항 · 정답이 들어 있다)
+--                    1 ──< training_quiz_attempts  (응시할 때마다 한 줄)
+--                    1 ──< training_completions    (사람당 한 줄, 처음 합격한 날)
+--
+-- 두 가지가 이 절의 뼈대다.
+--
+-- 첫째, 정답은 앱으로 나가지 않는다. training_quiz_questions 에는 select 정책을
+-- 아예 두지 않아서 그 표를 읽는 창구가 없고, 문항은 course_quiz() 가 정답과 해설을
+-- 뺀 채로만 내보낸다.
+--
+-- 둘째, 채점과 수료 판정은 submit_quiz() 만 한다. 응시·수료 두 표에 insert 정책이
+-- 없으므로 앱이 "몇 점 맞았고 수료했습니다"를 직접 적어 넣을 방법 자체가 없다.
+-- 수료는 보호자가 간병인을 고를 때 근거로 쓰일 기록이라, 앱이 보낸 값을 믿으면
+-- 그 기록 전체가 뜻을 잃는다.
+--
+-- 교육 내용을 앱 번들이 아니라 여기에 두는 이유는, 교육 자료가 앱 배포와 상관없이
+-- 늘어나고 고쳐지는 것이기 때문이다. Mock 모드가 읽는 사본은 src/api/training.demo.ts 에
+-- 있고 식별자를 맞춰 두었다 — 내용을 고칠 때는 두 곳을 함께 고친다.
+
+-- 33) 교육 과정 ---------------------------------------------------------------
+
+create table if not exists public.training_courses (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null unique,
+  title text not null,
+  summary text not null,
+
+  -- 수료하면 프로필에 함께 보이는 자격 이름. 없는 과정도 있다.
+  certification_label text,
+  estimated_minutes smallint not null check (estimated_minutes > 0),
+
+  -- 합격 기준. 맞힌 문항 비율(0~100)이 이 값 이상이면 수료한다.
+  -- 과정마다 다르게 둔다 — 응급 처치와 위생 교육을 같은 잣대로 볼 이유가 없다.
+  pass_score smallint not null default 80 check (pass_score between 50 and 100),
+
+  display_order smallint not null default 0,
+
+  -- 내용을 다듬는 동안 감춰 두기 위한 값. 내린 과정도 지우지 않는다 —
+  -- 지우면 그 과정을 수료한 사람의 기록까지 함께 사라진다.
+  is_published boolean not null default true,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+comment on table public.training_courses is '간병인 교육 과정. 내용은 운영자가 심고 앱은 읽기만 한다.';
+comment on column public.training_courses.pass_score is '합격 기준(맞힌 문항 비율 0~100). 과정마다 다르다.';
+comment on column public.training_courses.is_published is '거짓이면 목록과 상세에서 보이지 않는다. 이미 수료한 기록은 그대로 남는다.';
+
+drop trigger if exists training_courses_set_updated_at on public.training_courses;
+create trigger training_courses_set_updated_at
+  before update on public.training_courses
+  for each row execute function public.set_updated_at();
+
+alter table public.training_courses enable row level security;
+
+-- 교육은 간병인 대상이지만 읽는 것까지 막지 않는다.
+-- 보호자가 "간병인이 어떤 교육을 받는가"를 볼 수 있어도 잃는 것이 없고,
+-- Phase 11 의 관리자도 같은 목록을 본다. 응시만 간병인으로 제한한다.
+drop policy if exists "공개 교육 과정 조회" on public.training_courses;
+create policy "공개 교육 과정 조회"
+  on public.training_courses for select
+  to authenticated
+  using (is_published);
+
+-- insert/update/delete 정책은 두지 않는다. 과정을 심고 고치는 일은 운영자가 SQL 로 한다.
+
+-- 34) 교육 내용 ---------------------------------------------------------------
+
+create table if not exists public.training_lessons (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.training_courses (id) on delete cascade,
+
+  display_order smallint not null,
+  title text not null,
+  body text not null,
+
+  -- 본문을 끝까지 읽지 못해도 남아야 하는 것들. 요약이 아니라 현장에서 손이 먼저 나가야 하는 항목이다.
+  key_points text[] not null default '{}',
+
+  created_at timestamptz not null default now(),
+
+  constraint training_lessons_order_unique unique (course_id, display_order)
+);
+
+comment on table public.training_lessons is '교육 과정의 단원. 순서(display_order)대로 읽는다.';
+
+alter table public.training_lessons enable row level security;
+
+drop policy if exists "공개 과정 교육 내용 조회" on public.training_lessons;
+create policy "공개 과정 교육 내용 조회"
+  on public.training_lessons for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.training_courses c
+      where c.id = course_id and c.is_published
+    )
+  );
+
+-- 35) 퀴즈 문항 ---------------------------------------------------------------
+--
+-- 이 표에는 select 정책이 없다. 정답(answer_index)과 해설이 함께 들어 있어서,
+-- 한 줄이라도 앱이 직접 읽을 수 있으면 수료의 뜻이 사라지기 때문이다.
+-- 문항을 읽는 창구는 아래 course_quiz() 하나뿐이고, 그쪽은 정답을 빼고 내보낸다.
+
+create table if not exists public.training_quiz_questions (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.training_courses (id) on delete cascade,
+
+  display_order smallint not null,
+  question text not null,
+
+  -- 보기. 배열의 순서가 곧 보기 번호이며 번호는 1부터 센다.
+  choices text[] not null check (array_length(choices, 1) between 2 and 6),
+
+  -- 정답 보기의 번호(1부터). 보기 개수를 넘지 못한다.
+  answer_index smallint not null check (answer_index >= 1),
+
+  -- 왜 그 답인지. 맞힌 문항에도 보여 준다 — 찍어서 맞힌 것을 배운 것으로 두지 않는다.
+  explanation text not null,
+
+  created_at timestamptz not null default now(),
+
+  constraint training_quiz_questions_order_unique unique (course_id, display_order),
+  constraint training_quiz_questions_answer_in_range
+    check (answer_index <= array_length(choices, 1))
+);
+
+comment on table public.training_quiz_questions is '퀴즈 문항과 정답. select 정책이 없어 앱은 이 표를 읽지 못한다 — 문항은 course_quiz() 로만 나간다.';
+comment on column public.training_quiz_questions.answer_index is '정답 보기 번호(1부터). 앱으로 내보내지 않는다.';
+
+alter table public.training_quiz_questions enable row level security;
+
+-- 정책을 하나도 만들지 않는다. RLS 가 켜져 있고 정책이 없으면 아무도 읽을 수 없다.
+
+-- 36) 공개 과정 목록 ----------------------------------------------------------
+--
+-- 문항 수를 과정 표에 적어 두지 않고 뷰가 그때그때 센다. 적어 두면 문항을 늘릴 때마다
+-- 두 값을 함께 고쳐야 하고, 어긋난 문항 수는 아무도 바로 알아차리지 못한다 —
+-- 평균 별점을 user_ratings 뷰가 세는 것과 같은 이유다.
+--
+-- 문항 표는 아무도 읽을 수 없으므로 이 뷰는 호출자 권한으로 돌지 않는다(security_invoker = false).
+-- 개수만 세어 내보내며 문항이나 정답은 담기지 않는다.
+
+create or replace view public.published_courses
+with (security_invoker = false) as
+select
+  c.id,
+  c.slug,
+  c.title,
+  c.summary,
+  c.certification_label,
+  c.estimated_minutes,
+  c.pass_score,
+  c.display_order,
+  (
+    select count(*)::integer
+    from public.training_quiz_questions q
+    where q.course_id = c.id
+  ) as question_count
+from public.training_courses c
+where c.is_published;
+
+comment on view public.published_courses is '공개된 교육 과정과 문항 수. 문항과 정답은 담기지 않아 누구에게나 열어도 된다.';
+
+revoke all on public.published_courses from anon;
+grant select on public.published_courses to authenticated;
+
+-- 37) 퀴즈 문항 내보내기 ------------------------------------------------------
+--
+-- 정답(answer_index)과 해설은 빼고 보낸다. 해설은 채점 결과와 함께 돌려주므로
+-- 문항을 받는 시점에는 필요하지 않고, 함께 보내면 정답이 그대로 드러난다.
+
+create or replace function public.course_quiz(target_course uuid)
+returns table (
+  id uuid,
+  display_order smallint,
+  question text,
+  choices text[]
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select q.id, q.display_order, q.question, q.choices
+  from public.training_quiz_questions q
+  join public.training_courses c on c.id = q.course_id
+  where q.course_id = target_course and c.is_published
+  order by q.display_order;
+$$;
+
+comment on function public.course_quiz(uuid) is '이 과정의 퀴즈 문항. 정답과 해설은 내보내지 않는다.';
+
+revoke all on function public.course_quiz(uuid) from public, anon;
+grant execute on function public.course_quiz(uuid) to authenticated;
+
+-- 38) 응시 기록 ---------------------------------------------------------------
+--
+-- 점수(0~100)만 남기지 않고 맞힌 개수와 그때의 문항 수를 함께 남긴다.
+-- 나중에 문항이 늘거나 줄면 비율만으로는 그때 무엇을 풀었는지 되짚을 수 없다.
+
+create table if not exists public.training_quiz_attempts (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.training_courses (id) on delete cascade,
+  caregiver_id uuid not null references public.profiles (id) on delete cascade,
+
+  correct_count smallint not null check (correct_count >= 0),
+  question_count smallint not null check (question_count > 0),
+  score smallint not null check (score between 0 and 100),
+  passed boolean not null,
+
+  created_at timestamptz not null default now(),
+
+  constraint training_quiz_attempts_count_in_range check (correct_count <= question_count)
+);
+
+comment on table public.training_quiz_attempts is '퀴즈 응시 한 번의 결과. 몇 번이든 쌓이며 지워지지 않는다.';
+
+create index if not exists training_quiz_attempts_caregiver_idx
+  on public.training_quiz_attempts (caregiver_id, created_at desc);
+
+alter table public.training_quiz_attempts enable row level security;
+
+drop policy if exists "본인 응시 기록 조회" on public.training_quiz_attempts;
+create policy "본인 응시 기록 조회"
+  on public.training_quiz_attempts for select
+  to authenticated
+  using ((select auth.uid()) = caregiver_id);
+
+-- insert/update/delete 정책은 두지 않는다. 기록을 만드는 일은 submit_quiz() 만 한다.
+
+-- 39) 수료 --------------------------------------------------------------------
+--
+-- 과정당 한 줄이다. 이미 수료한 과정을 다시 풀어 더 높은 점수를 받아도 줄이 늘지 않고
+-- 날짜도 그대로다 — 수료는 "언제 이 교육을 마쳤는가"의 기록이라 나중 응시로 날짜가
+-- 밀리면 이력으로서 뜻을 잃는다.
+
+create table if not exists public.training_completions (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.training_courses (id) on delete cascade,
+  caregiver_id uuid not null references public.profiles (id) on delete cascade,
+
+  -- 어느 응시로 수료했는지. 나중에 문항이 바뀌어도 그때 무엇을 풀었는지 되짚을 수 있다.
+  attempt_id uuid not null references public.training_quiz_attempts (id) on delete cascade,
+
+  completed_at timestamptz not null default now(),
+
+  constraint training_completions_one_per_course unique (course_id, caregiver_id)
+);
+
+comment on table public.training_completions is '교육 수료. 사람마다 과정당 한 줄이며 날짜는 처음 합격한 날이다.';
+
+create index if not exists training_completions_caregiver_idx
+  on public.training_completions (caregiver_id, completed_at desc);
+
+alter table public.training_completions enable row level security;
+
+drop policy if exists "본인 수료 기록 조회" on public.training_completions;
+create policy "본인 수료 기록 조회"
+  on public.training_completions for select
+  to authenticated
+  using ((select auth.uid()) = caregiver_id);
+
+-- insert/update/delete 정책은 두지 않는다. 수료를 만드는 일은 submit_quiz() 만 한다.
+
+-- 40) 퀴즈 제출과 채점 --------------------------------------------------------
+--
+-- 앱은 고른 보기 번호만 보낸다. 점수도, 합격 여부도 보내지 않는다.
+--
+-- 채점은 앱이 보낸 답이 아니라 이 과정의 문항을 기준으로 돈다. 없는 문항의 답이
+-- 섞여 있어도 세지 않고, 빠진 문항은 틀린 것으로 센다 — 답을 적게 보내서 분모를
+-- 줄이는 일이 없어야 한다.
+--
+-- 결과와 응시 기록을 한 번에 돌려준다. 나눠서 부르면 채점과 조회 사이에 다른 응시가
+-- 끼어들 수 있고, 화면은 방금 낸 그 답의 결과를 보여 줘야 한다.
+
+create or replace function public.submit_quiz(target_course uuid, submitted_answers jsonb default '[]'::jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target public.training_courses%rowtype;
+  graded jsonb;
+  total smallint;
+  correct smallint;
+  final_score smallint;
+  did_pass boolean;
+  new_attempt public.training_quiz_attempts%rowtype;
+  new_completion public.training_completions%rowtype;
+  earlier public.training_completions%rowtype;
+begin
+  if not public.is_caregiver() then
+    raise exception '간병인만 교육 퀴즈를 풀 수 있습니다.' using errcode = '22023';
+  end if;
+
+  select * into target
+  from public.training_courses c
+  where c.id = target_course and c.is_published;
+
+  -- 없는 과정과 내려간 과정을 구분해서 알려 주지 않는다
+  if target.id is null then
+    return null;
+  end if;
+
+  select
+    coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'question_id', q.id,
+          'selected_index', chosen.choice_index,
+          'answer_index', q.answer_index,
+          'is_correct', chosen.choice_index is not distinct from q.answer_index,
+          'explanation', q.explanation
+        )
+        order by q.display_order
+      ),
+      '[]'::jsonb
+    ),
+    (count(*))::smallint,
+    (count(*) filter (where chosen.choice_index is not distinct from q.answer_index))::smallint
+  into graded, total, correct
+  from public.training_quiz_questions q
+  -- 문항 하나에 답 하나. 같은 문항의 답이 여러 번 들어와도 먼저 온 것만 본다
+  -- (with ordinality 로 배열 순서를 되살려서 "먼저"를 분명히 정한다).
+  -- 식별자를 uuid 로 바꾸지 않고 문자열끼리 맞춰 본다. 앱이 uuid 가 아닌 값을 보내도
+  -- 그 답이 어느 문항에도 걸리지 않을 뿐, 채점 자체가 오류로 끝나지는 않는다.
+  left join lateral (
+    select (answer.item ->> 'choice_index')::smallint as choice_index
+    from jsonb_array_elements(submitted_answers) with ordinality as answer(item, idx)
+    where answer.item ->> 'question_id' = q.id::text
+    order by answer.idx
+    limit 1
+  ) chosen on true
+  where q.course_id = target.id;
+
+  if total = 0 then
+    raise exception '이 과정에는 아직 퀴즈가 없습니다.' using errcode = '22023';
+  end if;
+
+  -- 앱의 src/lib/training.ts 가 Mock 모드에서 같은 식으로 센다
+  final_score := round(correct * 100.0 / total);
+  did_pass := final_score >= target.pass_score;
+
+  insert into public.training_quiz_attempts
+    (course_id, caregiver_id, correct_count, question_count, score, passed)
+  values (target.id, actor, correct, total, final_score, did_pass)
+  returning * into new_attempt;
+
+  if did_pass then
+    insert into public.training_completions (course_id, caregiver_id, attempt_id)
+    values (target.id, actor, new_attempt.id)
+    -- 이미 수료한 과정은 덮어쓰지 않는다. 수료일은 처음 합격한 날 그대로다.
+    on conflict (course_id, caregiver_id) do nothing
+    returning * into new_completion;
+
+    if new_completion.id is null then
+      select * into earlier
+      from public.training_completions tc
+      where tc.course_id = target.id and tc.caregiver_id = actor;
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'attempt', to_jsonb(new_attempt),
+    'results', graded,
+    'is_new_completion', new_completion.id is not null,
+    'completed_at', coalesce(new_completion.completed_at, earlier.completed_at)
+  );
+end;
+$$;
+
+comment on function public.submit_quiz(uuid, jsonb) is '퀴즈를 채점하고 붙었으면 수료를 남긴다. 점수와 합격 여부는 앱이 아니라 이 함수가 정한다.';
+
+revoke all on function public.submit_quiz(uuid, jsonb) from public, anon;
+grant execute on function public.submit_quiz(uuid, jsonb) to authenticated;
+
+-- 41) 교육 과정 심기 ----------------------------------------------------------
+--
+-- 여러 번 실행해도 안전하다. 식별자가 같으면 내용을 덮어쓰므로 문장을 다듬은 뒤
+-- 이 절만 다시 돌려도 된다. 식별자를 바꾸면 그 과정을 수료한 기록이 과정을 잃으므로
+-- 내용을 고칠 때 식별자는 그대로 둔다.
+--
+-- 같은 내용이 Mock 모드용으로 src/api/training.demo.ts 에도 있다. 두 곳을 함께 고친다.
+
+insert into public.training_courses
+  (id, slug, title, summary, certification_label, estimated_minutes, pass_score, display_order)
+values
+  (
+    '00000009-0001-4000-8000-000000000001',
+    'dementia-care',
+    '치매 어르신 돌봄 기초',
+    '기억이 흐려진 어르신과 어떻게 이야기하고, 반복되는 질문과 화를 어떻게 받아야 하는지 배웁니다.',
+    '치매전문교육 이수',
+    25, 80, 1
+  ),
+  (
+    '00000009-0001-4000-8000-000000000002',
+    'emergency-response',
+    '응급 상황 대처와 심폐소생술',
+    '쓰러지심, 숨 막히심, 낙상처럼 몇 분이 갈리는 상황에서 먼저 무엇을 할지 몸에 익힙니다.',
+    '심폐소생술(CPR) 교육 이수',
+    20, 80, 2
+  ),
+  (
+    '00000009-0001-4000-8000-000000000003',
+    'infection-and-transfer',
+    '감염 예방과 안전한 이동 돕기',
+    '손 위생과 욕창 예방, 그리고 어르신과 간병인 모두 다치지 않는 부축·이동 방법을 익힙니다.',
+    null,
+    15, 70, 3
+  )
+on conflict (id) do update set
+  slug = excluded.slug,
+  title = excluded.title,
+  summary = excluded.summary,
+  certification_label = excluded.certification_label,
+  estimated_minutes = excluded.estimated_minutes,
+  pass_score = excluded.pass_score,
+  display_order = excluded.display_order;
+
+insert into public.training_lessons (id, course_id, display_order, title, body, key_points)
+values
+  (
+    '00000009-0002-4000-8000-000000010001',
+    '00000009-0001-4000-8000-000000000001',
+    1,
+    '치매는 고집이 아니라 병입니다',
+    e'같은 것을 몇 번이고 묻고, 방금 드신 식사를 안 먹었다고 하시고, 아끼던 물건을 누가 가져갔다고 하십니다. 이것은 어르신이 고집을 부리거나 우리를 시험하는 것이 아니라 병의 증상입니다.\n\n기억은 최근 것부터 사라집니다. 그래서 어르신에게는 오늘 아침이 없고 30년 전이 지금입니다. "아까 말씀드렸잖아요"라고 바로잡으면 어르신은 자기가 틀렸다는 사실만 남고 왜 틀렸는지는 남지 않습니다. 남는 것은 무안함과 두려움뿐입니다.\n\n돌봄의 목표는 어르신을 현실로 데려오는 것이 아니라, 어르신이 있는 자리에서 편안하시게 하는 것입니다.',
+    array[
+      '반복되는 질문은 증상이지 고집이 아닙니다',
+      '틀린 말을 바로잡기보다 그 순간의 감정을 먼저 받습니다',
+      '어르신을 현실로 끌어오려 하지 않습니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000010002',
+    '00000009-0001-4000-8000-000000000001',
+    2,
+    '말을 거는 방법',
+    e'앞에서, 눈높이를 맞추고, 천천히 말합니다. 뒤에서 갑자기 말을 걸거나 팔을 잡으면 놀라서 밀치실 수 있습니다. 이때의 저항은 공격이 아니라 방어입니다.\n\n한 번에 하나만 묻습니다. "식사하시고 약 드신 다음에 산책 나가실래요?"는 세 가지 질문입니다. "식사하실까요?"로 충분합니다. 선택지도 둘까지만 드립니다.\n\n말이 막히실 때는 기다립니다. 대신 말해 드리면 대화는 빨라지지만 어르신은 말할 기회를 잃습니다.',
+    array[
+      '앞에서 눈높이를 맞추고 천천히 말합니다',
+      '한 번에 한 가지만, 선택지는 둘까지',
+      '뒤에서 갑자기 다가가거나 팔을 잡지 않습니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000010003',
+    '00000009-0001-4000-8000-000000000001',
+    3,
+    '화를 내실 때',
+    e'치매 어르신이 갑자기 화를 내실 때는 대개 이유가 있습니다. 아프시거나, 화장실이 급하시거나, 배가 고프시거나, 낯선 곳에서 무섭거나 합니다. 말로 설명하지 못하시니 화로 나옵니다.\n\n먼저 안전한 거리를 두고 목소리를 낮춥니다. 맞서 설명하거나 설득하지 않습니다. 그 순간의 감정을 그대로 받아 드리고("놀라셨겠어요"), 화제를 다른 곳으로 옮기거나 자리를 바꿔 드립니다.\n\n진정되신 뒤에는 무슨 일이 있었는지 보호자에게 알립니다. 반복되는 상황에는 대개 반복되는 원인이 있고, 그 기록이 다음번을 막습니다.',
+    array[
+      '갑작스러운 화는 통증·배뇨·공포 같은 다른 신호일 수 있습니다',
+      '맞서 설득하지 말고 감정을 받은 뒤 상황을 바꿉니다',
+      '있었던 일은 보호자에게 알려 기록으로 남깁니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000020001',
+    '00000009-0001-4000-8000-000000000002',
+    1,
+    '쓰러지셨을 때의 순서',
+    e'어깨를 가볍게 두드리며 큰 소리로 불러 반응을 봅니다. 반응이 없으면 곧바로 119에 신고합니다. 혼자 있다면 스피커폰으로 바꿔 두고 두 손을 씁니다.\n\n다음으로 숨을 쉬는지 10초 안에 봅니다. 가슴이 오르내리지 않거나 헐떡이는 듯한 숨만 있으면 숨을 쉬지 않는 것으로 봅니다.\n\n신고보다 앞서는 것은 없습니다. 보호자에게 먼저 전화하다 5분을 보내면 그 5분은 되찾을 수 없습니다. 보호자 연락은 119에 신고한 다음입니다.',
+    array[
+      '반응 확인 → 119 신고 → 호흡 확인 순서로 합니다',
+      '보호자보다 119가 먼저입니다',
+      '헐떡이는 숨은 정상 호흡이 아닙니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000020002',
+    '00000009-0001-4000-8000-000000000002',
+    2,
+    '가슴압박',
+    e'단단한 바닥에 눕히고 가슴 한가운데(복장뼈 아래쪽 절반)에 손꿈치를 댑니다. 두 손을 겹치고 팔을 곧게 편 채 체중으로 누릅니다.\n\n어른 기준으로 약 5cm 깊이, 1분에 100~120회 속도입니다. 누른 뒤에는 가슴이 완전히 올라오도록 힘을 뺍니다. 덜 올라오면 심장이 다시 채워지지 않습니다.\n\n인공호흡에 자신이 없으면 가슴압박만 계속해도 됩니다. 구급대가 올 때까지, 또는 어르신이 스스로 숨을 쉬실 때까지 멈추지 않습니다.',
+    array[
+      '가슴 한가운데를 약 5cm 깊이로, 1분에 100~120회',
+      '누른 뒤 가슴이 완전히 올라오게 힘을 뺍니다',
+      '자신이 없으면 가슴압박만 해도 됩니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000020003',
+    '00000009-0001-4000-8000-000000000002',
+    3,
+    '기도막힘과 낙상',
+    e'식사 중 갑자기 말을 못 하시고 목을 감싸 쥐시면 기도막힘입니다. 기침을 하실 수 있으면 계속 기침하시게 두고, 소리도 내지 못하시면 등을 세게 두드린 뒤 복부 밀어내기를 번갈아 합니다.\n\n낙상은 일으켜 세우는 것이 먼저가 아닙니다. 머리를 부딪치셨는지, 어느 곳이 아프신지, 팔다리를 움직이실 수 있는지 먼저 확인합니다. 골절이나 척추 손상이 있는 상태에서 일으키면 손상이 커집니다.\n\n어느 경우든 있었던 일은 시각과 함께 보호자에게 알립니다.',
+    array[
+      '기침을 하실 수 있으면 기침을 막지 않습니다',
+      '낙상 후에는 일으키기 전에 통증과 움직임을 먼저 확인합니다',
+      '있었던 일은 시각과 함께 보호자에게 알립니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000030001',
+    '00000009-0001-4000-8000-000000000003',
+    1,
+    '손 위생이 먼저입니다',
+    e'간병에서 감염을 막는 가장 확실한 방법은 손 씻기입니다. 어르신을 만지기 전과 후, 기저귀나 상처를 다룬 뒤, 식사를 돕기 전에 씻습니다.\n\n비누로 30초입니다. 손가락 사이, 손톱 밑, 손목까지 닿아야 합니다. 물과 비누가 없을 때는 손 소독제를 쓰되, 눈에 보이게 더러워졌거나 설사·구토를 다룬 뒤에는 반드시 비누로 씻습니다.\n\n장갑은 손 씻기를 대신하지 않습니다. 장갑을 벗은 뒤에도 손은 씻습니다.',
+    array[
+      '어르신을 만지기 전후, 기저귀·상처를 다룬 뒤에는 반드시 씻습니다',
+      '비누로 30초, 손가락 사이와 손목까지',
+      '장갑은 손 씻기를 대신하지 않습니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000030002',
+    '00000009-0001-4000-8000-000000000003',
+    2,
+    '욕창은 생기기 전에 막습니다',
+    e'누워 지내시는 어르신은 같은 자리가 눌린 채로 있으면 피가 돌지 않아 살이 상합니다. 꼬리뼈, 발뒤꿈치, 어깨뼈, 귀 뒤가 잘 생기는 자리입니다.\n\n2시간마다 체위를 바꿔 드리는 것이 기본입니다. 피부가 붉어졌다가 손을 떼고 30분이 지나도 돌아오지 않으면 이미 욕창의 시작입니다.\n\n젖은 상태가 가장 위험합니다. 땀이나 소변으로 축축해지면 바로 갈아 드리고 잘 말립니다. 다만 붉어진 자리를 문지르지는 않습니다 — 문지르면 상한 조직이 더 벌어집니다.',
+    array[
+      '2시간마다 체위를 바꿔 드립니다',
+      '붉은 자국이 30분 넘게 남으면 욕창의 시작입니다',
+      '축축한 상태를 오래 두지 말고, 붉어진 자리는 문지르지 않습니다'
+    ]
+  ),
+  (
+    '00000009-0002-4000-8000-000000030003',
+    '00000009-0001-4000-8000-000000000003',
+    3,
+    '나도 다치지 않는 이동 돕기',
+    e'허리로 들면 간병인이 먼저 다칩니다. 발을 어깨너비로 벌리고 무릎을 굽혀 다리 힘으로 일으킵니다. 허리는 굽히지 않고 세운 채로 둡니다.\n\n어르신을 최대한 몸 가까이 붙여서 옮깁니다. 팔을 뻗어 멀리서 당기면 힘은 몇 배로 들고 어깨가 상합니다. 겨드랑이를 잡아 끌어올리는 것도 어깨 탈구의 흔한 원인이라 하지 않습니다.\n\n혼자 감당하기 어려우면 혼자 하지 않습니다. 이동보조기구를 쓰거나 사람을 부르는 것이 두 사람 모두를 지킵니다.',
+    array[
+      '허리가 아니라 무릎과 다리 힘으로 일으킵니다',
+      '어르신을 몸 가까이 붙여서 옮깁니다',
+      '겨드랑이를 잡아 끌어올리지 않습니다'
+    ]
+  )
+on conflict (id) do update set
+  course_id = excluded.course_id,
+  display_order = excluded.display_order,
+  title = excluded.title,
+  body = excluded.body,
+  key_points = excluded.key_points;
+
+insert into public.training_quiz_questions
+  (id, course_id, display_order, question, choices, answer_index, explanation)
+values
+  (
+    '00000009-0003-4000-8000-000000010001',
+    '00000009-0001-4000-8000-000000000001',
+    1,
+    '어르신이 방금 드신 점심을 안 먹었다고 하십니다. 어떻게 하는 것이 좋습니까?',
+    array[
+      '드셨다는 것을 분명히 알려 드리고 넘어간다',
+      '시장하시겠다고 받아 드린 뒤 가벼운 간식을 드리며 화제를 옮긴다',
+      '식사한 그릇을 보여 드리며 확인시켜 드린다',
+      '보호자에게 전화해 어르신께 직접 말씀드리게 한다'
+    ],
+    2,
+    '기억을 바로잡아도 어르신께는 틀렸다는 사실만 남습니다. 감정을 먼저 받아 드리고 자연스럽게 상황을 바꾸는 편이 낫습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000010002',
+    '00000009-0001-4000-8000-000000000001',
+    2,
+    '치매 어르신에게 말을 걸 때 맞는 방법은 무엇입니까?',
+    array[
+      '뒤에서 어깨를 짚어 주의를 끈 뒤 말한다',
+      '한 번에 여러 선택지를 드려 고르시게 한다',
+      '앞에서 눈높이를 맞추고 한 번에 한 가지만 천천히 묻는다',
+      '말이 막히시면 대신 말씀해 드려 대화를 이어 간다'
+    ],
+    3,
+    '앞에서, 눈높이를 맞추고, 한 번에 하나만 묻습니다. 뒤에서 다가가면 놀라서 방어 반응이 나올 수 있습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000010003',
+    '00000009-0001-4000-8000-000000000001',
+    3,
+    '어르신이 갑자기 큰 소리를 내며 화를 내십니다. 가장 먼저 살펴야 할 것은 무엇입니까?',
+    array[
+      '어디가 아프시거나 화장실이 급하신지 같은 몸의 신호',
+      '누가 잘못했는지 상황의 앞뒤',
+      '어르신이 오늘 약을 잘 드셨는지 보호자에게 확인',
+      '조용해지실 때까지 방에서 나와 기다린다'
+    ],
+    1,
+    '갑작스러운 화는 통증, 배뇨, 배고픔, 공포처럼 말로 표현하지 못한 다른 신호인 경우가 많습니다. 원인을 먼저 봅니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000010004',
+    '00000009-0001-4000-8000-000000000001',
+    4,
+    '치매 어르신의 기억에 대해 맞는 설명은 무엇입니까?',
+    array[
+      '오래된 기억부터 순서대로 사라진다',
+      '최근 기억부터 흐려지고 오래된 기억이 더 오래 남는다',
+      '기억은 남아 있고 말만 나오지 않는 것이다',
+      '규칙적으로 물어보면 기억이 되살아난다'
+    ],
+    2,
+    '최근 기억부터 사라집니다. 어르신에게 30년 전이 지금처럼 느껴지는 것은 그 때문입니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000010005',
+    '00000009-0001-4000-8000-000000000001',
+    5,
+    '어르신이 진정되신 뒤 간병인이 해야 할 일은 무엇입니까?',
+    array[
+      '어르신께 아까 왜 그러셨는지 여쭤 본다',
+      '다음에 또 그러시면 안 된다고 약속을 받는다',
+      '있었던 일과 그때의 상황을 보호자에게 알린다',
+      '별일 아니므로 따로 알리지 않는다'
+    ],
+    3,
+    '반복되는 상황에는 반복되는 원인이 있습니다. 그 기록이 쌓여야 다음번을 막을 수 있습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000020001',
+    '00000009-0001-4000-8000-000000000002',
+    1,
+    '어르신이 쓰러져 반응이 없습니다. 가장 먼저 할 일은 무엇입니까?',
+    array[
+      '보호자에게 전화해 상황을 알린다',
+      '119에 신고한다',
+      '물을 조금 드려 정신을 차리게 한다',
+      '침대로 옮겨 눕힌다'
+    ],
+    2,
+    '반응이 없으면 곧바로 119입니다. 보호자 연락은 그다음입니다 — 먼저 전화하다 보낸 몇 분은 되찾을 수 없습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000020002',
+    '00000009-0001-4000-8000-000000000002',
+    2,
+    '어른에게 하는 가슴압박의 깊이와 속도로 맞는 것은 무엇입니까?',
+    array[
+      '약 2cm 깊이로 1분에 60회',
+      '약 5cm 깊이로 1분에 100~120회',
+      '약 8cm 깊이로 1분에 140회',
+      '깊이는 상관없고 빠르기만 하면 된다'
+    ],
+    2,
+    '어른 기준 약 5cm 깊이, 1분에 100~120회입니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000020003',
+    '00000009-0001-4000-8000-000000000002',
+    3,
+    '가슴압박을 할 때 흔히 놓치는 것은 무엇입니까?',
+    array[
+      '누른 뒤 가슴이 완전히 올라오도록 힘을 빼는 것',
+      '두 손을 나란히 놓는 것',
+      '팔꿈치를 굽혀 힘을 조절하는 것',
+      '푹신한 침대 위에서 하는 것'
+    ],
+    1,
+    '누른 뒤 가슴이 완전히 올라와야 심장이 다시 채워집니다. 또 압박은 단단한 바닥에서 해야 합니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000020004',
+    '00000009-0001-4000-8000-000000000002',
+    4,
+    '식사 중 어르신이 목을 감싸 쥐고 기침을 세게 하고 계십니다. 어떻게 해야 합니까?',
+    array[
+      '즉시 등을 두드리고 복부 밀어내기를 시작한다',
+      '물을 마시게 해 음식을 넘기게 한다',
+      '기침을 계속하시게 두고 곁에서 지켜본다',
+      '입에 손을 넣어 음식을 꺼낸다'
+    ],
+    3,
+    '기침을 하실 수 있다는 것은 기도가 완전히 막히지 않았다는 뜻입니다. 기침이 가장 효과적이므로 막지 않습니다. 소리조차 못 내실 때 등 두드리기와 복부 밀어내기를 합니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000020005',
+    '00000009-0001-4000-8000-000000000002',
+    5,
+    '어르신이 화장실에서 넘어지셨습니다. 무엇을 먼저 해야 합니까?',
+    array[
+      '얼른 부축해 일으켜 침대로 모신다',
+      '아픈 곳과 팔다리를 움직이실 수 있는지 먼저 확인한다',
+      '넘어진 자리를 정리하고 사진을 찍는다',
+      '괜찮다고 하시면 그대로 둔다'
+    ],
+    2,
+    '골절이나 척추 손상이 있는 상태에서 일으키면 손상이 커집니다. 통증과 움직임을 먼저 확인합니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000030001',
+    '00000009-0001-4000-8000-000000000003',
+    1,
+    '손을 씻어야 하는 때로 알맞지 않은 것은 무엇입니까?',
+    array[
+      '어르신을 만지기 전',
+      '기저귀를 갈아 드린 뒤',
+      '장갑을 벗은 뒤',
+      '장갑을 끼고 있으면 씻지 않아도 된다'
+    ],
+    4,
+    '장갑은 손 씻기를 대신하지 않습니다. 장갑을 벗은 뒤에도 손은 씻습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000030002',
+    '00000009-0001-4000-8000-000000000003',
+    2,
+    '누워 지내시는 어르신의 체위는 얼마마다 바꿔 드리는 것이 기본입니까?',
+    array['30분마다', '2시간마다', '6시간마다', '하루 한 번'],
+    2,
+    '2시간마다가 기본입니다. 같은 자리가 오래 눌리면 피가 돌지 않아 욕창이 생깁니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000030003',
+    '00000009-0001-4000-8000-000000000003',
+    3,
+    '꼬리뼈 부위가 붉어졌고 손을 떼고 30분이 지나도 돌아오지 않습니다. 어떻게 봐야 합니까?',
+    array[
+      '눌린 자국이므로 그대로 두면 된다',
+      '욕창이 시작된 것으로 보고 눌리지 않게 하며 보호자에게 알린다',
+      '붉은 자리를 문질러 피가 돌게 한다',
+      '파우더를 뿌려 말린다'
+    ],
+    2,
+    '30분이 지나도 남는 붉은 자국은 욕창의 시작입니다. 문지르면 상한 조직이 더 벌어지므로 문지르지 않습니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000030004',
+    '00000009-0001-4000-8000-000000000003',
+    4,
+    '어르신을 침대에서 일으켜 드릴 때 맞는 자세는 무엇입니까?',
+    array[
+      '허리를 굽혀 상체 힘으로 들어 올린다',
+      '겨드랑이를 잡고 끌어올린다',
+      '무릎을 굽혀 다리 힘으로 일으키고 어르신을 몸 가까이 붙인다',
+      '팔을 멀리 뻗어 한 번에 당긴다'
+    ],
+    3,
+    '허리로 들면 간병인이 먼저 다칩니다. 무릎을 굽혀 다리 힘을 쓰고, 어르신을 몸 가까이 붙여 옮깁니다.'
+  ),
+  (
+    '00000009-0003-4000-8000-000000030005',
+    '00000009-0001-4000-8000-000000000003',
+    5,
+    '혼자 옮기기 어려운 어르신을 이동해야 할 때 알맞은 것은 무엇입니까?',
+    array[
+      '힘들어도 혼자 해내는 것이 간병인의 역할이다',
+      '보조기구를 쓰거나 사람을 부른다',
+      '어르신께 힘을 더 쓰시라고 부탁한다',
+      '한 번에 빠르게 옮겨 시간을 줄인다'
+    ],
+    2,
+    '혼자 감당하기 어려우면 혼자 하지 않습니다. 보조기구와 사람을 쓰는 것이 어르신과 간병인 모두를 지킵니다.'
+  )
+on conflict (id) do update set
+  course_id = excluded.course_id,
+  display_order = excluded.display_order,
+  question = excluded.question,
+  choices = excluded.choices,
+  answer_index = excluded.answer_index,
+  explanation = excluded.explanation;
+
+-- 42) 아직 열지 않은 것 -------------------------------------------------------
+--
+--   수료를 보호자에게 보여 주기: 지금은 간병인 본인만 자기 수료를 본다.
+--     추천 후보(recommendation_candidates)에 수료를 얹으면 보호자가 "확인된 교육"을
+--     근거로 간병인을 고를 수 있다. 반환 컬럼이 바뀌는 일이라 Phase 11 에서 함께 연다.
+--   매칭 점수 반영: 넣지 않았다. 별점과 같은 이유다 — 교육을 아직 못 들은 새 간병인이
+--     계속 아래로 밀리면 첫 매칭을 잡지 못한다. 몇 개부터 얼마나 반영할지는
+--     수료가 쌓인 뒤에 정한다.
+--   응시 횟수 제한: 두지 않았다. 이 퀴즈는 걸러내기 위한 시험이 아니라 배우게 하려는
+--     것이고, 틀린 문항은 해설과 함께 돌려주므로 다시 푸는 것 자체가 교육이다.
+--   과정 관리 화면: 과정을 심고 고치는 일은 아직 SQL 로 한다. 운영자 화면은 Phase 11 이다.

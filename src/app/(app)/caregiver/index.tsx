@@ -10,6 +10,7 @@ import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
 import { liveMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
+import { useTrainingStore } from '@/store/use-training-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -36,6 +37,10 @@ export default function CaregiverHomeScreen() {
   const matches = useMatchHistoryStore((state) => state.matches);
   const loadMatches = useMatchHistoryStore((state) => state.load);
 
+  const courses = useTrainingStore((state) => state.courses);
+  const completions = useTrainingStore((state) => state.completions);
+  const loadTraining = useTrainingStore((state) => state.load);
+
   const caregiverId = user?.id;
 
   useFocusEffect(
@@ -44,8 +49,9 @@ export default function CaregiverHomeScreen() {
         void loadRequests(caregiverId);
         void loadProfile(caregiverId);
         void loadMatches(caregiverId, 'caregiver');
+        void loadTraining(caregiverId);
       }
-    }, [caregiverId, loadMatches, loadProfile, loadRequests])
+    }, [caregiverId, loadMatches, loadProfile, loadRequests, loadTraining])
   );
 
   // 프로필이 있으면 나에게 가장 잘 맞는 요청을, 없으면 가장 최근 요청을 보여 준다
@@ -135,6 +141,17 @@ export default function CaregiverHomeScreen() {
             : matches.length > 0
               ? `지난 간병 ${matches.length}건`
               : '아직 수락한 요청이 없습니다'}
+        </AppText>
+      </Card>
+
+      <Card onPress={() => router.push('/caregiver/training')}>
+        <AppText variant="subheading">교육과 수료</AppText>
+        <AppText variant="body" tone="secondary">
+          {completions.length > 0
+            ? `수료 ${completions.length}개 · 남은 과정 ${courses.length - completions.length}개`
+            : courses.length > 0
+              ? `들을 수 있는 교육 ${courses.length}개`
+              : '아직 열린 교육이 없습니다'}
         </AppText>
       </Card>
 
