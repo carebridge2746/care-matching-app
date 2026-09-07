@@ -2158,3 +2158,376 @@ on conflict (id) do update set
 --   응시 횟수 제한: 두지 않았다. 이 퀴즈는 걸러내기 위한 시험이 아니라 배우게 하려는
 --     것이고, 틀린 문항은 해설과 함께 돌려주므로 다시 푸는 것 자체가 교육이다.
 --   과정 관리 화면: 과정을 심고 고치는 일은 아직 SQL 로 한다. 운영자 화면은 Phase 11 이다.
+
+-- ===========================================================================
+-- Phase 10 — 노쇼와 대체 간병인
+-- ===========================================================================
+--
+-- 수락해 놓고 오지 않는 일이 있다. 그것은 취소와 다르다 —
+-- 취소는 못 오게 되었다고 알린 것이고, 노쇼는 알리지 않은 것이다.
+--
+-- 그래서 취소 기록에서 노쇼를 추론하지 않는다. 시작일이 지난 취소를 노쇼로 세면,
+-- 하루 전에 연락하고 그만둔 사람과 말없이 오지 않은 사람이 같은 기록을 갖게 된다.
+-- 노쇼는 보호자가 직접 신고할 때만 남는다.
+--
+-- 신고하면 요청은 곧바로 다시 대기중(pending)이 된다. care_requests.status 에 있는
+-- no_show 값은 쓰지 않는다 — 요청을 그 상태에 두면 어느 간병인도 볼 수 없어서,
+-- 사람이 가장 급한 순간에 요청이 잠긴다. 노쇼는 요청이 아니라 매칭에 붙는 사실이고,
+-- 무슨 일이 있었는지는 matches 이력에 남는다.
+--
+-- 대신 두 곳에서 그 간병인을 뺀다.
+--   accept_care_request()        — 다시 수락할 수 없다
+--   recommendation_candidates()  — 이 요청의 추천 목록에 나오지 않는다
+-- 다른 요청에서는 그대로 후보가 된다. 노쇼 한 번으로 일을 못 하게 막지는 않는다.
+
+-- 43) 매칭에 노쇼 남기기 ------------------------------------------------------
+--
+-- 취소와 나란히 두지 않고 상태를 따로 둔다. 배지 색과 문구가 달라야 하고,
+-- 무엇보다 "그만둔 사람"과 "오지 않은 사람"을 한 값으로 묶으면 나중에 갈라낼 수 없다.
+
+alter table public.matches
+  add column if not exists no_show_at timestamptz;
+
+alter table public.matches
+  add column if not exists no_show_reported_by uuid references public.profiles (id) on delete set null;
+
+alter table public.matches
+  add column if not exists no_show_note text;
+
+comment on column public.matches.no_show_at is '간병인이 오지 않은 것으로 신고된 시각.';
+comment on column public.matches.no_show_reported_by is '신고한 사람. 언제나 그 매칭의 보호자다.';
+
+-- 상태 값이 늘었으므로 제약을 다시 건다 (check 제약은 값을 덧붙일 수 없다)
+alter table public.matches
+  drop constraint if exists matches_status_check;
+alter table public.matches
+  add constraint matches_status_check
+    check (status in ('accepted', 'in_progress', 'completed', 'cancelled', 'no_show'));
+
+alter table public.matches
+  drop constraint if exists matches_status_time_valid;
+alter table public.matches
+  add constraint matches_status_time_valid check (
+    (status <> 'in_progress' or started_at is not null)
+    and (status <> 'completed' or completed_at is not null)
+    and (status <> 'cancelled' or cancelled_at is not null)
+    and (status <> 'no_show' or no_show_at is not null)
+    and (cancelled_at is null) = (cancelled_by is null)
+    and (no_show_at is null) = (no_show_reported_by is null)
+    -- 노쇼는 시작되지 않은 간병에만 붙는다. 와서 하다가 끊긴 것은 취소다.
+    and (status <> 'no_show' or started_at is null)
+  );
+
+comment on column public.matches.status is 'accepted 수락됨 / in_progress 간병중 / completed 종료 / cancelled 취소 / no_show 오지 않음';
+
+-- 살아 있는 매칭을 요청당 하나로 묶는 matches_live_per_request_idx 는 그대로 둔다.
+-- no_show 는 살아 있는 상태가 아니므로, 신고된 매칭이 남아 있어도 새 간병인이 수락할 수 있다.
+
+-- 이 요청에서 오지 않았던 사람을 찾는 조회에 쓴다 (수락과 추천 양쪽에서 부른다)
+create index if not exists matches_no_show_idx
+  on public.matches (request_id, caregiver_id)
+  where status = 'no_show';
+
+-- 44) 노쇼 신고 ---------------------------------------------------------------
+--
+-- 보호자만 신고할 수 있다. 간병인이 자기 결석을 신고할 일은 없고, 오지 않았다는 것을
+-- 아는 사람은 그 자리에 있던 보호자뿐이다.
+--
+-- 시작일 당일부터 신고할 수 있다. 시작일이 완전히 지나야만 신고할 수 있게 하면,
+-- 오늘 오기로 한 간병인이 오지 않은 그날 — 대체 간병인이 가장 급한 날 — 에는
+-- 아무것도 할 수 없다. 아직 오지 않은 날짜를 미리 신고하는 것만 막는다.
+--
+-- 날짜 비교는 한국 시간 기준으로 한다. start_date 는 보호자가 한국에서 고른 날짜인데
+-- 서버의 UTC 자정으로 견주면 한국 시각 오전 9시 전까지는 "아직 오지 않은 날"이 된다.
+
+create or replace function public.report_no_show(match_id uuid, note text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target public.matches%rowtype;
+  starts_on date;
+begin
+  select * into target
+  from public.matches m
+  where m.id = match_id
+    and m.guardian_id = actor
+    and m.status = 'accepted';
+
+  -- 없는 매칭, 남의 매칭, 이미 시작했거나 끝난 매칭을 구분해서 알려 주지 않는다
+  if target.id is null then
+    return null;
+  end if;
+
+  select r.start_date into starts_on
+  from public.care_requests r
+  where r.id = target.request_id;
+
+  if starts_on is null or starts_on > (now() at time zone 'Asia/Seoul')::date then
+    raise exception '간병 시작일이 지나야 신고할 수 있습니다.' using errcode = '22023';
+  end if;
+
+  update public.matches m
+     set status = 'no_show',
+         no_show_at = now(),
+         no_show_reported_by = actor,
+         no_show_note = nullif(trim(note), '')
+   where m.id = target.id;
+
+  -- 요청은 곧바로 다시 대기중이 된다. 시작 전 취소와 같은 처리이며,
+  -- matched_caregiver_id 를 반드시 비운다 — 비우지 않으면
+  -- care_requests_matched_state_valid 제약에 걸린다.
+  update public.care_requests r
+     set status = 'pending',
+         matched_caregiver_id = null,
+         matched_at = null
+   where r.id = target.request_id;
+
+  return target.id;
+end;
+$$;
+
+comment on function public.report_no_show(uuid, text) is '간병인이 오지 않았다고 보호자가 신고한다. 요청은 곧바로 다시 대기중이 된다.';
+
+revoke all on function public.report_no_show(uuid, text) from public, anon;
+grant execute on function public.report_no_show(uuid, text) to authenticated;
+
+-- 45) 오지 않았던 간병인은 같은 요청을 다시 가져갈 수 없다 --------------------
+--
+-- 신고와 동시에 요청이 다시 열리므로, 막지 않으면 그 간병인이 목록에서 같은 요청을
+-- 그대로 다시 수락할 수 있다. 보호자는 같은 일을 한 번 더 겪게 된다.
+--
+-- 매칭 행을 만드는 부분은 Phase 7 과 같다. 조건 한 줄만 늘었다.
+
+create or replace function public.accept_care_request(request_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  caregiver uuid := (select auth.uid());
+  accepted public.care_requests%rowtype;
+begin
+  if caregiver is null or not public.is_caregiver() then
+    raise exception '간병인만 요청을 수락할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  -- 이 요청에서 오지 않았던 사람인지 먼저 본다.
+  -- 요청을 바꾼 뒤에 확인하면 이미 가져간 뒤가 된다.
+  --
+  -- matches 에는 request_id 컬럼이 있어서 인자 이름과 겹친다. 그대로 두면 plpgsql 이
+  -- 어느 쪽인지 가리지 못해 거부하므로 함수 이름으로 인자를 가리킨다.
+  if exists (
+    select 1 from public.matches m
+    where m.request_id = accept_care_request.request_id
+      and m.caregiver_id = caregiver
+      and m.status = 'no_show'
+  ) then
+    raise exception '이 요청에서 오지 않으신 것으로 신고되어 다시 수락하실 수 없습니다.'
+      using errcode = '22023';
+  end if;
+
+  update public.care_requests r
+     set status = 'matched',
+         matched_caregiver_id = caregiver,
+         matched_at = now()
+   where r.id = accept_care_request.request_id
+     and r.status = 'pending'
+  returning * into accepted;
+
+  -- 없는 요청과 이미 넘어간 요청을 구분하지 않는다 — 구분해서 알려 주면
+  -- 아무 uuid나 넣어 보며 요청의 존재 여부를 알아낼 수 있다.
+  if accepted.id is null then
+    return null;
+  end if;
+
+  insert into public.matches (request_id, guardian_id, caregiver_id, status, accepted_at)
+  values (accepted.id, accepted.guardian_id, caregiver, 'accepted', accepted.matched_at);
+
+  return accepted.id;
+end;
+$$;
+
+comment on function public.accept_care_request(uuid) is '대기중 요청을 수락해 matched 로 바꾸고 matches 행을 만든다. 이미 넘어간 요청이면 null 을, 이 요청에서 오지 않았던 간병인이면 예외를 돌려준다.';
+
+revoke all on function public.accept_care_request(uuid) from public, anon;
+grant execute on function public.accept_care_request(uuid) to authenticated;
+
+-- 46) 오지 않았던 간병인은 이 요청의 추천에서 뺀다 ----------------------------
+--
+-- 수락을 막는 것만으로는 모자란다. 목록에 그대로 남아 있으면 보호자가 그 사람을 다시
+-- 고르려다 막히는 일이 생기고, 무엇보다 오지 않았던 사람이 추천된다는 것 자체가
+-- 이 목록을 믿을 수 없게 만든다.
+--
+-- 반환 컬럼은 그대로이므로 create or replace 로 바꿀 수 있다. where 절 한 줄만 늘었다.
+-- 다른 요청에서는 그대로 후보가 된다 — 노쇼 한 번으로 일을 못 하게 막지는 않는다.
+
+create or replace function public.recommendation_candidates(request_id uuid)
+returns table (
+  caregiver_id uuid,
+  name text,
+  gender text,
+  years_of_experience smallint,
+  certifications text[],
+  skills text[],
+  care_types text[],
+  regions text[],
+  min_daily_wage integer,
+  introduction text,
+  availability text[],
+  rating_avg numeric,
+  review_count integer
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  req public.care_requests%rowtype;
+begin
+  select * into req from public.care_requests r where r.id = request_id;
+
+  if req.id is null or req.guardian_id <> (select auth.uid()) then
+    return;
+  end if;
+
+  return query
+  select
+    p.id,
+    public.mask_person_name(pr.name),
+    p.gender,
+    p.years_of_experience,
+    p.certifications,
+    p.skills,
+    p.care_types,
+    p.regions,
+    p.min_daily_wage,
+    p.introduction,
+    coalesce(
+      array_agg(a.weekday || ':' || a.slot) filter (where a.weekday is not null),
+      '{}'
+    ),
+    ur.rating_avg,
+    coalesce(ur.review_count, 0)
+  from public.caregiver_profiles p
+  join public.profiles pr on pr.id = p.id
+  left join public.caregiver_availability a on a.caregiver_id = p.id
+  -- 후기가 없는 간병인도 후보에서 빠지지 않는다 (left join)
+  left join public.user_ratings ur on ur.user_id = p.id
+  where
+    req.care_type = any (p.care_types)
+    and (req.preferred_caregiver_gender = 'any' or p.gender = req.preferred_caregiver_gender)
+    and p.id is distinct from req.matched_caregiver_id
+    -- 이 요청에 오지 않았던 사람은 뺀다 (Phase 10)
+    and not exists (
+      select 1 from public.matches m
+      where m.request_id = req.id
+        and m.caregiver_id = p.id
+        and m.status = 'no_show'
+    )
+  group by p.id, pr.name, ur.rating_avg, ur.review_count
+  order by p.years_of_experience desc, p.id
+  limit 50;
+end;
+$$;
+
+comment on function public.recommendation_candidates(uuid) is '요청의 추천 후보가 될 수 있는 간병인. 이 요청에 오지 않았던 사람은 빠진다. 평균 별점을 함께 내보내되 점수는 매기지 않는다.';
+
+revoke all on function public.recommendation_candidates(uuid) from public, anon;
+grant execute on function public.recommendation_candidates(uuid) to authenticated;
+
+-- 47) 매칭 상세 뷰에 노쇼 얹기 ------------------------------------------------
+--
+-- 컬럼이 늘고 "성사된 매칭인가"의 뜻이 달라지므로 뷰를 다시 만든다.
+-- 취소와 마찬가지로, 오지 않은 매칭에서는 상대의 이름과 연락처를 다시 가린다 —
+-- 성사되지 않은 만남의 연락처를 이력이라는 이유로 계속 열어 둘 까닭이 없다.
+--
+-- 신고한 사람(no_show_reported_by)은 내보내지 않는다. 언제나 보호자이므로
+-- 식별자를 한 번 더 실어 보내도 새로 알 수 있는 것이 없다.
+
+-- 컬럼이 늘어나므로 create or replace 로는 안 되고 먼저 지워야 한다.
+-- 나머지는 Phase 7 의 정의 그대로이며, 바뀐 것은 engaged 한 줄이다.
+drop view if exists public.match_details;
+
+create or replace view public.match_details
+with (security_invoker = false) as
+select
+  m.id,
+  m.request_id,
+  m.guardian_id,
+  m.caregiver_id,
+  m.status,
+  m.accepted_at,
+  m.started_at,
+  m.completed_at,
+  m.cancelled_at,
+  m.cancelled_by,
+  m.cancel_reason,
+  m.no_show_at,
+  m.no_show_note,
+  m.created_at,
+  m.updated_at,
+
+  r.request_text,
+  r.care_type,
+  r.region,
+  r.start_date,
+  r.end_date,
+  r.daily_start_time,
+  r.daily_end_time,
+  r.required_skills,
+  r.budget_per_day,
+
+  case when v.viewer = m.guardian_id or v.engaged then pt.name
+       else public.mask_person_name(pt.name) end as patient_name,
+  pt.birth_year as patient_birth_year,
+  pt.gender as patient_gender,
+  pt.mobility as patient_mobility,
+  pt.cognition as patient_cognition,
+  pt.conditions as patient_conditions,
+  case when v.viewer = m.guardian_id or v.engaged then pt.care_notes end as patient_care_notes,
+
+  case when v.viewer = m.caregiver_id or v.engaged then cg.name
+       else public.mask_person_name(cg.name) end as caregiver_name,
+  case when v.viewer = m.caregiver_id or v.engaged then cg.phone end as caregiver_phone,
+
+  case when v.viewer = m.guardian_id or v.engaged then gu.name
+       else public.mask_person_name(gu.name) end as guardian_name,
+  case when v.viewer = m.guardian_id or v.engaged then gu.phone end as guardian_phone
+from public.matches m
+join public.care_requests r on r.id = m.request_id
+join public.patients pt on pt.id = r.patient_id
+join public.profiles cg on cg.id = m.caregiver_id
+join public.profiles gu on gu.id = m.guardian_id
+-- 같은 판정을 열 개 가까이 되풀이하지 않도록 한 번만 계산해 둔다.
+-- engaged = 만남이 성사되어 있는 매칭. 취소된 것에 더해 간병인이 오지 않은 것도 빠진다.
+-- 자기 자신의 자료는 engaged 와 무관하게 보인다.
+cross join lateral (
+  select (select auth.uid()) as viewer, m.status not in ('cancelled', 'no_show') as engaged
+) v
+where m.guardian_id = v.viewer or m.caregiver_id = v.viewer;
+
+comment on view public.match_details is '매칭 당사자가 서로와 간병 내용을 읽는 창구. 취소되거나 간병인이 오지 않은 매칭은 연락처와 특이사항을 다시 가린다.';
+
+revoke all on public.match_details from anon;
+grant select on public.match_details to authenticated;
+
+-- 48) 아직 열지 않은 것 -------------------------------------------------------
+--
+--   노쇼 신고 취소: 열지 않았다. 상대의 기록에 남는 판정이라 조용히 사라지면 안 된다.
+--     잘못된 신고의 이의 제기와 취소는 Phase 11(관리자)에서 별도 창구로 다룬다 —
+--     후기를 고치거나 지울 수 없게 둔 것과 같은 이유다.
+--   간병인 쪽 노쇼: 보호자가 약속한 자리에 없는 경우도 있지만 지금은 다루지 않는다.
+--     간병인은 취소로 처리하고 사유를 남긴다. 양쪽을 같은 표에서 다루려면
+--     "누가 누구를 신고했는가"가 필요한데, 그때는 신고 자체를 별도 표로 옮기는 편이 낫다.
+--   노쇼 이력을 보호자에게 보여 주기: 지금은 그 요청 안에서만 쓰인다.
+--     추천 후보에 사람별 노쇼 횟수를 얹으면 보호자가 미리 알 수 있지만, 반환 컬럼이
+--     바뀌는 일이고 몇 건부터 어떻게 보여 줄지도 정해야 한다. Phase 11 에서 함께 다룬다.
+--   자동 노쇼 판정: 시간이 지났다는 이유만으로 노쇼를 매기지 않는다. 간병인이 와 있는데
+--     시작 버튼만 누르지 않았을 수도 있고, 둘이 이야기해서 미뤘을 수도 있다.
+--     화면은 "확인이 필요합니다"까지만 말하고 판단은 그 자리에 있던 사람에게 맡긴다.

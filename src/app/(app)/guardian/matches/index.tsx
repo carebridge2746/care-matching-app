@@ -2,8 +2,9 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { MatchCancelForm, MatchCard, ReviewForm } from '@/components/care';
+import { MatchCancelForm, MatchCard, NoShowForm, ReviewForm } from '@/components/care';
 import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
+import { overdueMatches } from '@/lib/no-show';
 import { useAuthStore } from '@/store/use-auth-store';
 import { liveMatches, pastMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { hasReviewed, useReviewsStore } from '@/store/use-reviews-store';
@@ -26,6 +27,7 @@ export default function GuardianMatchesScreen() {
   const load = useMatchHistoryStore((state) => state.load);
   const complete = useMatchHistoryStore((state) => state.complete);
   const cancel = useMatchHistoryStore((state) => state.cancel);
+  const reportNoShow = useMatchHistoryStore((state) => state.reportNoShow);
 
   const written = useReviewsStore((state) => state.written);
   const submittingReviewId = useReviewsStore((state) => state.submittingMatchId);
@@ -35,6 +37,8 @@ export default function GuardianMatchesScreen() {
 
   /** 취소 확인을 펼쳐 둔 매칭. 한 번에 하나만 연다. */
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  /** 노쇼 신고 확인을 펼쳐 둔 매칭 */
+  const [reportingId, setReportingId] = useState<string | null>(null);
   /** 후기 작성을 펼쳐 둔 매칭 */
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const guardianId = user?.id;
@@ -55,6 +59,9 @@ export default function GuardianMatchesScreen() {
 
   const live = liveMatches(matches);
   const past = pastMatches(matches);
+  // 시작일이 지났는데 시작되지 않은 간병. 아래 목록에도 그대로 있지만 위에서 한 번 짚어 준다 —
+  // 매칭이 여러 건이면 카드 안의 안내만으로는 눈에 띄지 않는다.
+  const overdue = overdueMatches(live);
 
   return (
     <Screen scroll edges={['bottom']}>
@@ -71,6 +78,19 @@ export default function GuardianMatchesScreen() {
           actionTitle="간병 요청 보기"
           onAction={() => router.replace('/guardian/requests')}
         />
+      ) : null}
+
+      {overdue.length > 0 ? (
+        <View style={styles.section}>
+          <AppText variant="heading" tone="danger">
+            확인이 필요한 간병 {overdue.length}건
+          </AppText>
+          <AppText variant="caption" tone="secondary">
+            시작하기로 한 날이 지났는데 아직 시작되지 않았습니다. 간병인께 연락이 닿는지 먼저
+            확인해 보시고, 오지 않으셨다면 아래에서 신고해 주세요. 신고하시면 요청이 곧바로
+            다시 열려 다른 간병인이 수락할 수 있습니다.
+          </AppText>
+        </View>
       ) : null}
 
       {live.length > 0 ? (
@@ -95,6 +115,24 @@ export default function GuardianMatchesScreen() {
                   void cancel(match.id, guardianId, reason).then(() => setCancellingId(null));
                 }}
               />
+            ) : reportingId === match.id ? (
+              <NoShowForm
+                key={match.id}
+                match={match}
+                busy={updatingId === match.id}
+                onDismiss={() => setReportingId(null)}
+                onConfirm={(note) => {
+                  if (!guardianId) {
+                    return;
+                  }
+                  void reportNoShow(match.id, guardianId, note).then((reported) => {
+                    // 실패하면 폼을 닫지 않는다. 적은 내용이 사라지면 다시 쓰지 않는다.
+                    if (reported) {
+                      setReportingId(null);
+                    }
+                  });
+                }}
+              />
             ) : (
               <MatchCard
                 key={match.id}
@@ -108,6 +146,7 @@ export default function GuardianMatchesScreen() {
                   }
                 }}
                 onCancel={() => setCancellingId(match.id)}
+                onReportNoShow={() => setReportingId(match.id)}
               />
             )
           )}
@@ -118,8 +157,8 @@ export default function GuardianMatchesScreen() {
         <View style={styles.section}>
           <AppText variant="heading">지난 간병</AppText>
           <AppText variant="caption" tone="secondary">
-            끝났거나 취소된 간병입니다. 취소된 간병은 간병인의 연락처를 다시 가립니다.
-            끝난 간병에는 후기를 한 번 남길 수 있습니다.
+            끝났거나 취소된 간병, 그리고 간병인이 오지 않은 간병입니다. 성사되지 않은 간병은
+            간병인의 연락처를 다시 가립니다. 끝난 간병에는 후기를 한 번 남길 수 있습니다.
           </AppText>
 
           {past.map((match) =>

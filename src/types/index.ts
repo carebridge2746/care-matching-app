@@ -319,13 +319,14 @@ export type CaregiverRecommendation = {
  * 요청은 "이 간병 자리가 지금 어떤 상태인가"이고, 매칭은 "이 사람과의 간병 한 건이
  * 어떻게 흘러갔는가"다. 취소된 매칭이 남아 있어도 요청은 다시 대기중일 수 있다.
  */
-export type MatchStatus = 'accepted' | 'inProgress' | 'completed' | 'cancelled';
+export type MatchStatus = 'accepted' | 'inProgress' | 'completed' | 'cancelled' | 'noShow';
 
 export const MatchStatusLabels: Record<MatchStatus, string> = {
   accepted: '매칭 완료',
   inProgress: '간병 진행중',
   completed: '간병 종료',
   cancelled: '취소됨',
+  noShow: '오지 않음',
 };
 
 /**
@@ -337,6 +338,7 @@ export const MatchStatusTones: Record<MatchStatus, CareRequestStatus> = {
   inProgress: 'inProgress',
   completed: 'completed',
   cancelled: 'cancelled',
+  noShow: 'noShow',
 };
 
 /** 아직 끝나지 않은 매칭. 시작·종료·취소 버튼은 이때만 보여 준다. */
@@ -402,6 +404,15 @@ export type Match = {
   /** 취소한 쪽. 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다. */
   cancelledBy?: MatchParty;
   cancelReason?: string;
+  /**
+   * 노쇼로 신고된 시각.
+   *
+   * 신고한 사람은 담지 않는다. 노쇼는 언제나 보호자가 신고하며(간병인이 자기 결석을
+   * 신고할 일은 없다), 저장소에는 누가 눌렀는지 남아 있다.
+   */
+  noShowAt?: string;
+  /** 보호자가 남긴 상황 설명 */
+  noShowNote?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -1,6 +1,7 @@
 import { ApiError } from '@/api/api-error';
 import { readMockUsers } from '@/api/auth.mock';
 import { readAllMockCaregiverProfiles } from '@/api/caregiver.mock';
+import { mockNoShowCaregiverIds } from '@/api/match-history.mock';
 import type { MatchingAdapter } from '@/api/matching.types';
 import { delay, loadCareRequests } from '@/api/mock-store';
 import { readMockRatings } from '@/api/reviews.mock';
@@ -52,17 +53,24 @@ export const mockMatchingAdapter: MatchingAdapter = {
       throw new ApiError('not_found', '요청을 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
 
-    const [profiles, users, ratings] = await Promise.all([
+    const [profiles, users, ratings, noShowIds] = await Promise.all([
       readAllMockCaregiverProfiles(),
       readMockUsers(),
       // 평균 별점은 저장해 두지 않고 여기서 센다 — Supabase 쪽에서는 user_ratings 뷰가 같은 일을 한다
       readMockRatings(),
+      // 이 요청에서 오지 않았던 사람들 (Phase 10)
+      mockNoShowCaregiverIds(requestId),
     ]);
 
     return profiles
       .filter((profile) => {
         // 이미 이 요청을 수락한 사람은 다시 추천하지 않는다
         if (profile.id === request.matchedCaregiverId) {
+          return false;
+        }
+        // 이 요청에 오지 않았던 사람도 다시 추천하지 않는다.
+        // 다른 요청에서는 그대로 후보가 된다 — 노쇼 한 번으로 일을 못 하게 막지는 않는다.
+        if (noShowIds.includes(profile.id)) {
           return false;
         }
         // 맡을 수 없는 장소이거나 보호자가 지정한 성별이 아니면 후보가 아니다

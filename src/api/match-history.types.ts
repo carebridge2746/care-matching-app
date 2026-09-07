@@ -43,4 +43,17 @@ export type MatchHistoryAdapter = {
    * 시작한 뒤에 취소하면 요청도 함께 닫힌다.
    */
   cancel: (matchId: string, actorId: string, reason?: string) => Promise<CareMatch>;
+  /**
+   * 간병인이 오지 않았다고 신고한다 (accepted → noShow).
+   *
+   * 보호자만 신고할 수 있다. 간병인이 자기 결석을 신고할 일은 없고, 오지 않았다는 것을
+   * 아는 사람은 그 자리에 있던 보호자뿐이다.
+   *
+   * 아직 시작되지 않았고 시작일이 이미 왔을 때만 할 수 있다. 시작한 간병이 도중에
+   * 끊긴 것은 노쇼가 아니라 취소이고, 아직 오지 않은 날짜를 미리 신고할 수는 없다.
+   *
+   * 신고하면 요청은 곧바로 다시 대기중이 된다 — 시작 전 취소와 같다.
+   * 다른 점은 그 간병인이 이 요청을 다시 수락할 수 없고 추천에서도 빠진다는 것이다.
+   */
+  reportNoShow: (matchId: string, guardianId: string, note?: string) => Promise<CareMatch>;
 };

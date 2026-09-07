@@ -19,6 +19,7 @@ type MatchHistoryState = {
   start: (matchId: string, caregiverId: string) => Promise<boolean>;
   complete: (matchId: string, actorId: string) => Promise<boolean>;
   cancel: (matchId: string, actorId: string, reason?: string) => Promise<boolean>;
+  reportNoShow: (matchId: string, guardianId: string, note?: string) => Promise<boolean>;
   clearError: () => void;
 };
 
@@ -70,11 +71,15 @@ export const useMatchHistoryStore = create<MatchHistoryState>((set, get) => ({
     matchHistoryApi.cancel(matchId, actorId, reason)
   ),
 
+  reportNoShow: async (matchId, guardianId, note) => apply(set, get, matchId, () =>
+    matchHistoryApi.reportNoShow(matchId, guardianId, note)
+  ),
+
   clearError: () => set({ errorMessage: null }),
 }));
 
 /**
- * 상태를 옮기는 세 동작이 똑같이 하는 일.
+ * 상태를 옮기는 네 동작이 똑같이 하는 일.
  *
  * 성공하면 돌아온 매칭으로 목록의 그 줄만 갈아 끼우고, 실패하면 목록을 통째로 다시 부른다.
  * 실패는 대개 "상대가 먼저 바꿔 놓았다"는 뜻이라 화면에 남아 있는 목록도 이미 낡았기 때문이다.

@@ -18,7 +18,7 @@ import type { CareMatch } from '@/types';
  */
 
 const Columns =
-  'id, request_id, guardian_id, caregiver_id, status, accepted_at, started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, created_at, updated_at, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, budget_per_day, patient_name, patient_birth_year, patient_gender, patient_mobility, patient_cognition, patient_conditions, patient_care_notes, caregiver_name, caregiver_phone, guardian_name, guardian_phone';
+  'id, request_id, guardian_id, caregiver_id, status, accepted_at, started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, no_show_at, no_show_note, created_at, updated_at, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, budget_per_day, patient_name, patient_birth_year, patient_gender, patient_mobility, patient_cognition, patient_conditions, patient_care_notes, caregiver_name, caregiver_phone, guardian_name, guardian_phone';
 
 function toCareMatch(row: MatchDetailRow): CareMatch {
   return {
@@ -36,6 +36,9 @@ function toCareMatch(row: MatchDetailRow): CareMatch {
       ? { cancelledBy: row.cancelled_by === row.caregiver_id ? 'caregiver' : 'guardian' }
       : {}),
     ...(row.cancel_reason ? { cancelReason: row.cancel_reason } : {}),
+    // 신고한 사람은 담지 않는다 — 노쇼는 언제나 보호자가 신고한다
+    ...(row.no_show_at ? { noShowAt: row.no_show_at } : {}),
+    ...(row.no_show_note ? { noShowNote: row.no_show_note } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
 
@@ -173,5 +176,29 @@ export const supabaseMatchHistoryAdapter: MatchHistoryAdapter = {
     }
 
     return readMatch(cancelledId);
+  },
+
+  async reportNoShow(matchId, _guardianId, note) {
+    const supabase = getSupabaseClient();
+    const { data: reportedId, error } = await supabase.rpc('report_no_show', {
+      match_id: matchId,
+      note: note?.trim() || null,
+    });
+
+    if (error) {
+      // 시작일이 아직 오지 않았으면 함수가 예외를 던진다 (errcode 22023)
+      if (error.code === '22023') {
+        throw new ApiError('invalid_state', '간병 시작일이 지나야 신고할 수 있습니다.');
+      }
+      throw toApiError(error, '노쇼를 신고하지 못했습니다.');
+    }
+    if (!reportedId) {
+      throw new ApiError(
+        'invalid_state',
+        '아직 시작되지 않은 간병만 신고할 수 있습니다. 목록을 새로 불러와 주세요.'
+      );
+    }
+
+    return readMatch(reportedId);
   },
 };

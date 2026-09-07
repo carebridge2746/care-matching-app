@@ -9,16 +9,18 @@ import {
   saveCareRequests,
   saveMatches,
 } from '@/api/mock-store';
+import { today } from '@/lib/date';
 import { maskPersonName } from '@/lib/privacy';
-import type {
-  AppUser,
-  CareMatch,
-  CareRequest,
-  Match,
-  MatchCareSummary,
-  MatchContact,
-  MatchedPatient,
-  Patient,
+import {
+  isMatchLive,
+  type AppUser,
+  type CareMatch,
+  type CareRequest,
+  type Match,
+  type MatchCareSummary,
+  type MatchContact,
+  type MatchedPatient,
+  type Patient,
 } from '@/types';
 
 /**
@@ -86,7 +88,8 @@ function toCareMatch(
   users: AppUser[],
   viewerId: string
 ): CareMatch {
-  const engaged = match.status !== 'cancelled';
+  // 취소된 매칭과 오지 않은 매칭은 만남이 성사되지 않은 것이다. 연락처를 다시 가린다.
+  const engaged = match.status !== 'cancelled' && match.status !== 'noShow';
 
   return {
     ...match,
@@ -238,7 +241,7 @@ export const mockMatchHistoryAdapter: MatchHistoryAdapter = {
     await delay();
     const { matches, match } = await readOwnMatch(matchId, actorId);
 
-    if (match.status === 'completed' || match.status === 'cancelled') {
+    if (!isMatchLive(match.status)) {
       throw new ApiError('invalid_state', '이미 끝났거나 취소된 간병입니다.');
     }
 
@@ -268,7 +271,82 @@ export const mockMatchHistoryAdapter: MatchHistoryAdapter = {
 
     return saveAndRead(matches, cancelled, actorId);
   },
+
+  async reportNoShow(matchId, guardianId, note) {
+    await delay();
+    const { matches, match } = await readOwnMatch(matchId, guardianId);
+
+    // 오지 않았다는 것을 아는 사람은 그 자리에 있던 보호자뿐이다
+    if (match.guardianId !== guardianId) {
+      throw new ApiError('permission_denied', '보호자만 노쇼를 신고할 수 있습니다.');
+    }
+    if (match.status !== 'accepted') {
+      throw new ApiError(
+        'invalid_state',
+        '아직 시작되지 않은 간병만 신고할 수 있습니다. 목록을 새로 불러와 주세요.'
+      );
+    }
+
+    const requests = await loadCareRequests();
+    const request = requests.find((item) => item.id === match.requestId);
+
+    if (!request) {
+      throw new ApiError('not_found', '간병 정보를 찾지 못했습니다. 목록을 새로 불러와 주세요.');
+    }
+    // 아직 오지 않은 날짜의 간병을 미리 신고할 수는 없다
+    if (request.startDate > today()) {
+      throw new ApiError('invalid_state', '간병 시작일이 지나야 신고할 수 있습니다.');
+    }
+
+    const now = new Date().toISOString();
+    const trimmedNote = note?.trim();
+
+    const reported: Match = {
+      ...match,
+      status: 'noShow',
+      noShowAt: now,
+      ...(trimmedNote ? { noShowNote: trimmedNote } : {}),
+      updatedAt: now,
+    };
+
+    // 요청은 곧바로 다시 대기중이 된다. 사람이 필요한 상황은 그대로이고,
+    // 여기서 요청을 닫아 두면 가장 급한 순간에 아무 간병인도 이 요청을 볼 수 없다.
+    await moveRequest(match.requestId, (item) => {
+      const { matchedCaregiverId: _caregiverId, matchedAt: _matchedAt, ...rest } = item;
+      return { ...rest, status: 'pending', updatedAt: now };
+    });
+
+    return saveAndRead(matches, reported, guardianId);
+  },
 };
+
+/**
+ * 이 간병인이 이 요청에서 노쇼로 신고된 적이 있는지.
+ *
+ * 요청 수락(care-requests.mock)과 추천 목록(matching.mock)이 함께 쓴다.
+ * 오지 않은 사람이 같은 요청을 다시 가져가거나 다시 추천되면, 보호자는 같은 일을
+ * 한 번 더 겪게 된다. Supabase 쪽에서는 accept_care_request() 와
+ * recommendation_candidates() 가 같은 조건을 건다.
+ */
+export async function hasMockNoShow(requestId: string, caregiverId: string): Promise<boolean> {
+  const matches = await loadMatches();
+
+  return matches.some(
+    (match) =>
+      match.requestId === requestId &&
+      match.caregiverId === caregiverId &&
+      match.status === 'noShow'
+  );
+}
+
+/** 이 요청에서 노쇼로 신고된 간병인들 */
+export async function mockNoShowCaregiverIds(requestId: string): Promise<string[]> {
+  const matches = await loadMatches();
+
+  return matches
+    .filter((match) => match.requestId === requestId && match.status === 'noShow')
+    .map((match) => match.caregiverId);
+}
 
 /**
  * 간병인이 요청을 수락할 때 매칭 행을 만든다.

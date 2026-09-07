@@ -4,7 +4,8 @@ import { AppButton } from '@/components/common/app-button';
 import { AppText } from '@/components/common/app-text';
 import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
-import { formatKoreanTimestamp, formatPeriod } from '@/lib/date';
+import { formatKoreanDate, formatKoreanTimestamp, formatPeriod } from '@/lib/date';
+import { canReportNoShow, isMatchOverdue } from '@/lib/no-show';
 import { Spacing } from '@/theme';
 import {
   ageFromBirthYear,
@@ -27,6 +28,11 @@ export type MatchCardProps = {
   onStart?: () => void;
   onComplete?: () => void;
   onCancel?: () => void;
+  /**
+   * 보호자 화면에만 쓴다. 값을 주면 시작일이 온 뒤로 노쇼 신고 버튼이 보인다.
+   * 오지 않았다는 것을 아는 사람은 그 자리에 있던 보호자뿐이다.
+   */
+  onReportNoShow?: () => void;
   /** 끝난 간병에만 쓴다. 값을 주면 후기 작성 버튼이 보인다. */
   onReview?: () => void;
   /** 이 간병에 이미 후기를 남겼는지. 남겼으면 버튼 대신 그 사실을 보여 준다. */
@@ -51,6 +57,7 @@ export function MatchCard({
   onStart,
   onComplete,
   onCancel,
+  onReportNoShow,
   onReview,
   reviewed = false,
   onPress,
@@ -62,6 +69,9 @@ export function MatchCard({
   const isLive = isMatchLive(match.status);
   const canStart = isLive && viewer === 'caregiver' && match.status === 'accepted';
   const canComplete = isLive && match.status === 'inProgress';
+  // 시작일이 지났는데 아직 시작되지 않았다. 이것만으로 노쇼는 아니지만 확인이 필요하다.
+  const isOverdue = isMatchOverdue(match);
+  const canReport = Boolean(onReportNoShow) && viewer === 'guardian' && canReportNoShow(match);
 
   return (
     <Card onPress={onPress}>
@@ -104,11 +114,30 @@ export function MatchCard({
           {match.cancelledBy ? ` · ${MatchPartyLabels[match.cancelledBy]}가 취소` : ''}
           {match.cancelReason ? ` · ${match.cancelReason}` : ''}
         </AppText>
+      ) : match.status === 'noShow' && match.noShowAt ? (
+        <AppText variant="caption" tone="danger">
+          {formatKoreanTimestamp(match.noShowAt)}에 오지 않은 것으로 신고되었습니다
+          {match.noShowNote ? ` · ${match.noShowNote}` : ''}
+        </AppText>
       ) : (
         <AppText variant="caption" tone="secondary">
           {formatKoreanTimestamp(match.acceptedAt)}에 매칭되었습니다
         </AppText>
       )}
+
+      {/*
+        시작일이 지났는데 시작되지 않은 간병. 여기서 노쇼라고 부르지는 않는다 —
+        간병인이 와 있는데 시작 버튼만 누르지 않았을 수도 있고, 둘이 이야기해서 미뤘을 수도 있다.
+        무슨 일이 있었는지는 그 자리에 있던 사람만 안다.
+      */}
+      {isOverdue ? (
+        <AppText variant="caption" tone="danger">
+          {formatKoreanDate(care.startDate)}에 시작하기로 한 간병이 아직 시작되지 않았습니다.
+          {viewer === 'guardian'
+            ? ' 간병인께 연락이 닿는지 확인해 주세요.'
+            : ' 이미 가 계시다면 간병 시작을 눌러 주세요.'}
+        </AppText>
+      ) : null}
 
       {isLive && (canStart || canComplete || onCancel) ? (
         <View style={styles.actions}>
@@ -140,6 +169,19 @@ export function MatchCard({
             />
           ) : null}
         </View>
+      ) : null}
+
+      {/*
+        노쇼 신고는 취소와 나란히 두지 않고 한 줄 아래에 따로 둔다.
+        같은 줄에 놓으면 취소하려다 잘못 누르기 쉬운데, 신고는 되돌릴 수 없다.
+      */}
+      {canReport && onReportNoShow ? (
+        <AppButton
+          title="간병인이 오지 않았습니다"
+          variant="outline"
+          disabled={busy}
+          onPress={onReportNoShow}
+        />
       ) : null}
 
       {/* 후기는 끝난 간병에만 남길 수 있다. 취소된 간병에는 평가할 간병이 없었다. */}

@@ -135,7 +135,12 @@ export type RecommendationCandidateRow = {
 };
 
 /** 매칭 상태의 데이터베이스 표기. 요청 상태와 마찬가지로 snake_case 다. */
-export type MatchStatusRow = 'accepted' | 'in_progress' | 'completed' | 'cancelled';
+export type MatchStatusRow =
+  | 'accepted'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled'
+  | 'no_show';
 
 /**
  * 수락 이후의 간병 한 건.
@@ -156,6 +161,10 @@ export type MatchRow = {
   /** 취소한 사람(profiles.id). 보호자와 간병인 어느 쪽이든 될 수 있다. */
   cancelled_by: string | null;
   cancel_reason: string | null;
+  /** 노쇼로 신고된 시각. 신고는 보호자만 할 수 있다. */
+  no_show_at: string | null;
+  no_show_reported_by: string | null;
+  no_show_note: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -165,9 +174,13 @@ export type MatchRow = {
  *
  * 매칭에 간병 조건·환자·양쪽 사람을 붙여서 내보낸다.
  * 환자 특이사항과 연락처는 매칭이 성사되어 있는 동안에만 채워지고,
- * 취소된 매칭에서는 상대방 이름까지 가려진 채로 내려온다.
+ * 취소되거나 간병인이 오지 않은 매칭에서는 상대방 이름까지 가려진 채로 내려온다.
+ *
+ * 노쇼를 신고한 사람(no_show_reported_by)은 뷰에 담기지 않는다. 노쇼는 언제나 보호자가
+ * 신고하므로 식별자를 한 번 더 내보내도 새로 알 수 있는 것이 없다 —
+ * 취소한 쪽(cancelled_by)은 양쪽 모두 될 수 있어서 함께 내보낸다.
  */
-export type MatchDetailRow = MatchRow & {
+export type MatchDetailRow = Omit<MatchRow, 'no_show_reported_by'> & {
   request_text: string;
   care_type: CareType;
   region: string;
@@ -339,6 +352,7 @@ export const MatchStatusToRow: Record<MatchStatus, MatchStatusRow> = {
   inProgress: 'in_progress',
   completed: 'completed',
   cancelled: 'cancelled',
+  noShow: 'no_show',
 };
 
 export const MatchStatusFromRow: Record<MatchStatusRow, MatchStatus> = {
@@ -346,6 +360,7 @@ export const MatchStatusFromRow: Record<MatchStatusRow, MatchStatus> = {
   in_progress: 'inProgress',
   completed: 'completed',
   cancelled: 'cancelled',
+  no_show: 'noShow',
 };
 
 /** 서버가 채우는 값(id, 시각)과 기본값이 있는 컬럼은 넣지 않아도 된다 */
@@ -527,6 +542,14 @@ export type Database = {
       };
       cancel_match: {
         Args: { match_id: string; reason?: string | null };
+        Returns: string | null;
+      };
+      /**
+       * 간병인이 오지 않았다고 신고한다. 보호자만 부를 수 있다.
+       * 요청은 곧바로 다시 대기중이 되고, 그 간병인은 이 요청을 다시 수락할 수 없다.
+       */
+      report_no_show: {
+        Args: { match_id: string; note?: string | null };
         Returns: string | null;
       };
       /**

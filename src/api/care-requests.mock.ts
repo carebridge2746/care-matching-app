@@ -3,6 +3,7 @@ import type { CareRequestInput, CareRequestsAdapter } from '@/api/care-requests.
 import {
   cancelMockMatchesForRequest,
   createMockMatch,
+  hasMockNoShow,
   removeMockMatchesForRequests,
 } from '@/api/match-history.mock';
 import { delay, loadCareRequests, loadPatients, saveCareRequests } from '@/api/mock-store';
@@ -186,6 +187,14 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
       throw new ApiError(
         'invalid_state',
         '이미 다른 간병인이 수락했거나 보호자가 취소한 요청입니다. 목록을 새로 불러와 주세요.'
+      );
+    }
+    // 노쇼로 신고되면 요청은 곧바로 다시 대기중이 된다. 막지 않으면 오지 않았던 사람이
+    // 그 요청을 다시 가져갈 수 있고, 보호자는 같은 일을 한 번 더 겪게 된다.
+    if (await hasMockNoShow(id, caregiverId)) {
+      throw new ApiError(
+        'invalid_state',
+        '이 요청에서 오지 않으신 것으로 신고되어 다시 수락하실 수 없습니다.'
       );
     }
 

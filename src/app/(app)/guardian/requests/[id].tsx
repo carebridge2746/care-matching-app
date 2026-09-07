@@ -2,7 +2,12 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { CaregiverRecommendationCard, MatchCancelForm, MatchCard } from '@/components/care';
+import {
+  CaregiverRecommendationCard,
+  MatchCancelForm,
+  MatchCard,
+  NoShowForm,
+} from '@/components/care';
 import {
   AppButton,
   AppText,
@@ -14,6 +19,7 @@ import {
 } from '@/components/common';
 import { formatKoreanTimestamp, formatPeriod } from '@/lib/date';
 import { MatchWeights, RecommendationThreshold } from '@/lib/matching';
+import { noShowCountForRequest } from '@/lib/no-show';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCareRequestsStore } from '@/store/use-care-requests-store';
 import { liveMatchForRequest, useMatchHistoryStore } from '@/store/use-match-history-store';
@@ -82,8 +88,10 @@ export default function GuardianRequestDetailScreen() {
   const loadMatches = useMatchHistoryStore((state) => state.load);
   const completeMatch = useMatchHistoryStore((state) => state.complete);
   const cancelMatch = useMatchHistoryStore((state) => state.cancel);
+  const reportNoShow = useMatchHistoryStore((state) => state.reportNoShow);
 
   const [isCancellingMatch, setIsCancellingMatch] = useState(false);
+  const [isReportingNoShow, setIsReportingNoShow] = useState(false);
 
   const guardianId = user?.id;
   const request = requests.find((item) => item.id === id);
@@ -131,6 +139,9 @@ export default function GuardianRequestDetailScreen() {
   // 살아 있는 매칭은 요청당 하나뿐이다. 취소된 이력은 '간병 진행' 화면에서 모아 본다.
   const liveMatch = liveMatchForRequest(matches, request.id);
   const aiSchedule = request.aiConditions ? aiScheduleSummary(request.aiConditions.schedule) : '';
+  // 노쇼가 나면 요청은 곧바로 다시 대기중이 된다. 요청 행만 보면 아무 일도 없었던 것처럼
+  // 보이므로, 무슨 일이 있었는지는 매칭 이력에서 세어 여기에 적어 준다.
+  const noShowCount = noShowCountForRequest(matches, request.id);
 
   return (
     <Screen
@@ -234,6 +245,26 @@ export default function GuardianRequestDetailScreen() {
                 );
               }}
             />
+          ) : isReportingNoShow ? (
+            <NoShowForm
+              match={liveMatch}
+              busy={updatingMatchId === liveMatch.id}
+              onDismiss={() => setIsReportingNoShow(false)}
+              onConfirm={(note) => {
+                if (!guardianId) {
+                  return;
+                }
+                void reportNoShow(liveMatch.id, guardianId, note).then((reported) => {
+                  if (!reported) {
+                    return;
+                  }
+                  setIsReportingNoShow(false);
+                  // 신고하면 요청도 다시 대기중이 된다. 이 화면의 요청은 아직 낡았으므로
+                  // 다시 읽어야 아래의 추천 간병인 목록이 그 자리에서 열린다.
+                  void loadRequests(guardianId);
+                });
+              }}
+            />
           ) : (
             <MatchCard
               match={liveMatch}
@@ -245,6 +276,7 @@ export default function GuardianRequestDetailScreen() {
                 }
               }}
               onCancel={() => setIsCancellingMatch(true)}
+              onReportNoShow={() => setIsReportingNoShow(true)}
             />
           )}
         </View>
@@ -288,7 +320,13 @@ export default function GuardianRequestDetailScreen() {
       */}
       {isOpen ? (
         <View style={styles.section}>
-          <AppText variant="heading">추천 간병인</AppText>
+          <AppText variant="heading">{noShowCount > 0 ? '대체 간병인' : '추천 간병인'}</AppText>
+          {noShowCount > 0 ? (
+            <AppText variant="caption" tone="danger">
+              이 요청에서 간병인 {noShowCount}명이 오지 않았습니다. 그분들은 이 요청을 다시 맡을 수
+              없고 아래 목록에도 나오지 않습니다.
+            </AppText>
+          ) : null}
           <AppText variant="caption" tone="secondary">
             지역·역량·가능 시간·일당·경력·자격을 {TotalWeight}점 만점으로 계산해 점수가 높은 순으로
             보여 드립니다. 사람을 고르는 것은 보호자님입니다.
