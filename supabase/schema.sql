@@ -2652,3 +2652,236 @@ create policy "관리자 프로필 조회"
 -- 50) 의 트리거는 auth.uid() 가 null 인 이 경로를 통과시킨다.
 --
 --   update public.profiles set role = 'admin' where email = 'admin@example.com';
+
+-- 52) 후기는 지우지 않고 지운 표시를 한다 --------------------------------------
+--
+-- Phase 8 은 후기를 고칠 수도 지울 수도 없게 두었다. 관리자가 그 예외를 여는데,
+-- 행을 실제로 지우면 두 가지가 함께 무너진다.
+--
+--   (1) reviews_one_per_reviewer 가 풀린다. 삭제당한 작성자가 같은 매칭에 후기를
+--       새로 쓸 수 있게 되고, 막아 둔 "후기 수정"이 삭제→재작성으로 우회된다.
+--       삭제는 다시 쓸 기회를 주는 일이 아니라 조치다.
+--   (2) 분쟁 기록이 사라진다. 관리자가 왜 지웠는지를 나중에 되짚을 수 없다.
+--
+-- 그래서 컬럼 세 개를 얹고 읽는 쪽에서 걸러낸다. 유니크 제약은 그대로 살아 있으므로
+-- create_review() 의 on conflict do nothing 이 재작성을 계속 막는다 — 앱은 지금처럼
+-- null 을 받고 "이미 남기셨습니다"로 안내한다.
+
+alter table public.reviews add column if not exists deleted_at timestamptz;
+
+alter table public.reviews
+  add column if not exists deleted_by uuid references public.profiles (id) on delete set null;
+
+alter table public.reviews add column if not exists deleted_reason text;
+
+comment on column public.reviews.deleted_at is '관리자가 지운 시각. 값이 있으면 평균·목록·추천 어디에도 나오지 않는다.';
+comment on column public.reviews.deleted_by is '지운 관리자. 계정이 지워지면 비워지므로 판단 근거는 admin_actions 에 따로 남긴다.';
+
+-- 지운 사람 없이 지운 시각만 남는 것은 계정이 지워진 경우다 (on delete set null).
+-- 반대로 시각 없이 사람만 남는 행은 뜻이 없으므로 그쪽만 막는다.
+alter table public.reviews drop constraint if exists reviews_deletion_valid;
+alter table public.reviews add constraint reviews_deletion_valid
+  check (deleted_at is not null or deleted_by is null);
+
+-- 인덱스는 늘리지 않는다. 지워진 후기는 드물어서 reviews_reviewee_id_idx 로 찾은 뒤
+-- deleted_at 을 걸러내는 것으로 충분하다.
+
+-- 53) 취소한 사람이 지워질 수 있게 된다 ----------------------------------------
+--
+-- matches.cancelled_by 는 지금까지 언제나 그 매칭의 당사자였다. 당사자의 프로필이
+-- 지워지면 matches 행도 함께 지워지므로(guardian_id/caregiver_id 는 on delete cascade),
+-- cancelled_by 의 on delete set null 은 한 번도 실제로 돌지 않았다.
+--
+-- Phase 11 에서 관리자가 남의 매칭을 강제로 취소하면서 그 전제가 깨진다. 관리자는
+-- 그 매칭의 당사자가 아니므로, 관리자 계정을 지우면 set null 이 돌고 —
+-- matches_status_time_valid 의 (cancelled_at is null) = (cancelled_by is null) 에 걸려
+-- 계정 삭제가 통째로 실패한다.
+--
+-- 52) 의 reviews 와 같은 방향으로 푼다. 취소한 사람이 비어 있는 것은 계정이 지워진
+-- 경우이고, 취소 시각 없이 사람만 남는 행이 뜻이 없다.
+
+alter table public.matches drop constraint if exists matches_status_time_valid;
+alter table public.matches
+  add constraint matches_status_time_valid check (
+    (status <> 'in_progress' or started_at is not null)
+    and (status <> 'completed' or completed_at is not null)
+    and (status <> 'cancelled' or cancelled_at is not null)
+    and (status <> 'no_show' or no_show_at is not null)
+    and (cancelled_at is not null or cancelled_by is null)
+    and (no_show_at is not null or no_show_reported_by is null)
+    -- 노쇼는 시작되지 않은 간병에만 붙는다. 와서 하다가 끊긴 것은 취소다.
+    and (status <> 'no_show' or started_at is null)
+  );
+
+-- 54) 지워진 후기를 읽는 경로에서 빼기 -----------------------------------------
+--
+-- 이 페이즈에서 평균 별점의 정합성은 전부 여기에 달려 있다. 평균을 컬럼으로 들고
+-- 있지 않고 뷰로 세어 둔 덕분에 재집계 코드는 한 줄도 필요 없지만, 대신 읽는 경로가
+-- 모두 같은 조건을 써야 한다. 한 곳이라도 빠지면 목록에는 없는데 평균에는 남는 상태가
+-- 되고, 그건 아무도 바로 알아차리지 못한다.
+--
+-- 읽는 경로는 셋이다.
+--   (1) user_ratings 뷰             — 평균과 개수. 아래에서 조건을 붙인다.
+--   (2) public_reviews()            — 남에게 보여 주는 목록. 아래에서 조건을 붙인다.
+--   (3) recommendation_candidates() — user_ratings 를 left join 하므로 (1)로 따라온다.
+--
+-- 네 번째로 reviews 테이블을 직접 읽는 "후기 당사자 조회" 정책이 있는데, 여기는
+-- 일부러 그대로 둔다. 앱에서 이 경로로 읽는 것은 작성자 본인의 목록(listWritten)뿐이고,
+-- 자기 후기가 왜 사라졌는지는 본인에게 보여야 한다 — 화면은 "삭제됨"으로 표시한다.
+-- 평가받은 사람의 목록은 (2)를 지나므로 지워진 후기가 그대로 사라진다.
+
+create or replace view public.user_ratings
+with (security_invoker = false) as
+select
+  r.reviewee_id as user_id,
+  round(avg(r.rating)::numeric, 2) as rating_avg,
+  count(*)::integer as review_count
+from public.reviews r
+where r.deleted_at is null
+group by r.reviewee_id;
+
+comment on view public.user_ratings is '사람별 평균 별점과 후기 수. 지워진 후기는 빠진다. 코멘트가 없어 누구에게나 열어도 된다.';
+
+create or replace function public.public_reviews(subject_id uuid)
+returns table (
+  id uuid,
+  rating smallint,
+  comment text,
+  created_at timestamptz,
+  reviewer_name text
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    r.id,
+    r.rating,
+    r.comment,
+    r.created_at,
+    public.mask_person_name(p.name)
+  from public.reviews r
+  join public.profiles p on p.id = r.reviewer_id
+  where r.reviewee_id = subject_id
+    and r.deleted_at is null
+  order by r.created_at desc
+  limit 50;
+$$;
+
+comment on function public.public_reviews(uuid) is '이 사람이 받은 후기. 지워진 것은 빼고, 작성자 이름은 가려서 내보낸다.';
+
+-- 55) 후기 신고 ---------------------------------------------------------------
+--
+-- 신고할 수 있는 사람은 그 후기의 당사자 둘뿐이다 — "후기 당사자 조회" 정책과 같은
+-- 범위이며, 읽을 수 있는 사람이 신고할 수 있다는 뜻이다.
+--
+-- 평가받은 사람은 자기 신뢰도에 남는 기록이라 당연히 신고할 자리가 필요하다.
+-- 작성자를 함께 넣은 것은, 잘못 쓴 후기를 스스로 지울 수 없게 둔 것이 Phase 8 의
+-- 결정이고 그 예외 창구가 바로 여기이기 때문이다.
+--
+-- public_reviews() 로 남의 후기를 읽는 제3자는 넣지 않는다. 당사자가 아닌 신고는
+-- 큐만 불리고, 무엇이 사실인지 아는 사람은 그 간병에 있던 두 사람이다.
+
+create table if not exists public.review_reports (
+  id uuid primary key default gen_random_uuid(),
+  review_id uuid not null references public.reviews (id) on delete cascade,
+  reporter_id uuid not null references public.profiles (id) on delete cascade,
+
+  reason text not null check (reason in ('abuse', 'false_info', 'privacy', 'spam', 'other')),
+  detail text,
+
+  -- open 처리 대기 / accepted 후기를 지웠다 / dismissed 신고를 기각했다
+  status text not null default 'open' check (status in ('open', 'accepted', 'dismissed')),
+
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid references public.profiles (id) on delete set null,
+  resolution_note text,
+
+  -- 한 사람은 한 후기를 한 번만 신고한다. 같은 후기를 여러 사람이 신고하는 것은 막지 않는다.
+  constraint review_reports_one_per_reporter unique (review_id, reporter_id),
+
+  -- 처리하지 않은 신고에는 처리 시각이 없고, 처리한 신고에는 반드시 있다.
+  -- 처리한 관리자(resolved_by)는 계정이 지워지면 비워질 수 있어서 짝을 맞추지 않는다.
+  constraint review_reports_resolution_valid check ((status = 'open') = (resolved_at is null))
+);
+
+comment on table public.review_reports is '부적절한 후기 신고. 후기의 당사자 두 사람만 낼 수 있다.';
+comment on column public.review_reports.reason is 'abuse 욕설·비방 / false_info 허위 사실 / privacy 개인정보 노출 / spam 광고·도배 / other 기타';
+comment on column public.review_reports.status is 'open 대기 / accepted 후기를 지움 / dismissed 기각';
+
+-- 관리자 큐가 읽는 순서 그대로 (오래 기다린 신고가 위로)
+create index if not exists review_reports_open_idx
+  on public.review_reports (created_at) where status = 'open';
+
+-- 후기 하나에 달린 신고를 한 번에 마감할 때 쓴다
+create index if not exists review_reports_review_idx on public.review_reports (review_id);
+
+alter table public.review_reports enable row level security;
+
+-- 자기가 낸 신고가 어떻게 처리됐는지는 본인이 볼 수 있어야 한다.
+-- 관리자는 이 정책이 아니라 admin_review_reports() 로 읽는다 — 관리자가 무엇을 볼 수
+-- 있는지가 함수 목록에 다 드러나야 하고, 조치와 조회가 같은 자리에 있어야 한다.
+drop policy if exists "본인 신고 조회" on public.review_reports;
+create policy "본인 신고 조회"
+  on public.review_reports for select
+  to authenticated
+  using ((select auth.uid()) = reporter_id);
+
+-- insert/update/delete 정책은 두지 않는다.
+-- 신고는 report_review() 만, 처리는 관리자 함수만 할 수 있다.
+
+-- 56) 신고하기 -----------------------------------------------------------------
+--
+-- 인자 이름을 review_id 가 아니라 target_review 로 둔다. review_reports 에 같은 이름의
+-- 컬럼이 있어서, insert 문 안에서 어느 쪽인지 가려야 한다 — course_quiz 와 같은 이유다.
+
+create or replace function public.report_review(
+  target_review uuid,
+  reason text,
+  detail text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target public.reviews%rowtype;
+  report_id uuid;
+begin
+  if reason is null or reason not in ('abuse', 'false_info', 'privacy', 'spam', 'other') then
+    raise exception '신고 사유가 올바르지 않습니다.' using errcode = '23514';
+  end if;
+
+  select * into target
+  from public.reviews r
+  where r.id = target_review
+    and (r.reviewer_id = actor or r.reviewee_id = actor);
+
+  -- 없는 후기와 남의 후기를 구분해서 알려 주지 않는다
+  if target.id is null then
+    return null;
+  end if;
+
+  if target.deleted_at is not null then
+    raise exception '이미 지워진 후기입니다.' using errcode = '22023';
+  end if;
+
+  insert into public.review_reports (review_id, reporter_id, reason, detail)
+  values (target.id, actor, reason, nullif(trim(detail), ''))
+  -- 이미 신고한 후기는 다시 신고해도 줄이 늘지 않는다.
+  -- 앱은 null 을 받고 "이미 신고하셨습니다"로 안내한다.
+  on conflict (review_id, reporter_id) do nothing
+  returning id into report_id;
+
+  return report_id;
+end;
+$$;
+
+comment on function public.report_review(uuid, text, text) is '후기를 신고한다. 당사자만 낼 수 있고, 이미 신고했으면 null 을 돌려준다.';
+
+revoke all on function public.report_review(uuid, text, text) from public, anon;
+grant execute on function public.report_review(uuid, text, text) to authenticated;
