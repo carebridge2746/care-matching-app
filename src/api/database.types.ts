@@ -1,4 +1,4 @@
-import type { CareRequestStatus, CareTimeSlot, CareType, CaregiverGenderPreference, CognitionLevel, Gender, MatchStatus, MobilityLevel, UserRole, Weekday } from '@/types';
+import type { AdminActionTargetType, AdminActionType, CareRequestStatus, CareTimeSlot, CareType, CaregiverGenderPreference, CognitionLevel, DisputedMatchKind, Gender, MatchStatus, MobilityLevel, ReviewReportReason, UserRole, Weekday } from '@/types';
 
 /**
  * Supabase 테이블 타입 — 데이터베이스와 앱이 만나는 경계.
@@ -214,6 +214,117 @@ export type ReviewRow = {
   rating: number;
   comment: string | null;
   created_at: string;
+  /**
+   * 관리자가 지운 시각. 행은 남고 읽는 쪽에서 걸러낸다.
+   *
+   * 평균(user_ratings)과 남에게 보여 주는 목록(public_reviews)에서는 빠지지만,
+   * reviews 테이블을 직접 읽는 당사자 조회에는 그대로 내려온다 —
+   * 작성자 본인에게는 자기 후기가 왜 사라졌는지가 보여야 한다.
+   */
+  deleted_at: string | null;
+  deleted_by: string | null;
+  deleted_reason: string | null;
+};
+
+/** 신고 사유의 데이터베이스 표기. 상태 값들과 마찬가지로 snake_case 다. */
+export type ReviewReportReasonRow = 'abuse' | 'false_info' | 'privacy' | 'spam' | 'other';
+
+/** 신고의 처리 상태. 앱 표기와 같아서 변환이 필요 없다. */
+export type ReviewReportStatusRow = 'open' | 'accepted' | 'dismissed';
+
+/**
+ * 부적절한 후기 신고 한 줄.
+ *
+ * 앱은 이 표에 직접 쓰지 못한다. 신고는 report_review() 가, 처리는 관리자 함수가 한다.
+ * 읽기는 본인이 낸 신고만 열려 있다.
+ */
+export type ReviewReportRow = {
+  id: string;
+  review_id: string;
+  reporter_id: string;
+  reason: ReviewReportReasonRow;
+  detail: string | null;
+  status: ReviewReportStatusRow;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_note: string | null;
+};
+
+/**
+ * public.admin_review_reports() 가 돌려주는 행.
+ *
+ * 신고·후기·사람 셋을 이어 붙인 한 줄이다. 이름을 가리지 않는 유일한 창구이며,
+ * 관리자만 부를 수 있다 (함수 안에서 is_admin() 을 확인한다).
+ */
+export type AdminReviewReportRow = {
+  report_id: string;
+  review_id: string;
+  match_id: string;
+  reason: ReviewReportReasonRow;
+  detail: string | null;
+  status: ReviewReportStatusRow;
+  created_at: string;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  report_count: number;
+  reporter_id: string;
+  reporter_name: string;
+  rating: number;
+  comment: string | null;
+  review_created_at: string;
+  review_deleted_at: string | null;
+  reviewer_id: string;
+  reviewer_name: string;
+  reviewee_id: string;
+  reviewee_name: string;
+};
+
+/** 관리자가 손대야 하는 매칭의 종류. no_show 는 신고된 건, overdue 는 방치된 건이다. */
+export type DisputedMatchKindRow = 'no_show' | 'overdue';
+
+/** public.admin_disputed_matches() 가 돌려주는 행. 환자 정보와 연락처는 담기지 않는다. */
+export type DisputedMatchRow = {
+  kind: DisputedMatchKindRow;
+  match_id: string;
+  request_id: string;
+  status: MatchStatusRow;
+  region: string;
+  start_date: string;
+  end_date: string | null;
+  accepted_at: string;
+  started_at: string | null;
+  no_show_at: string | null;
+  no_show_note: string | null;
+  guardian_id: string;
+  guardian_name: string;
+  caregiver_id: string;
+  caregiver_name: string;
+};
+
+export type AdminActionTypeRow =
+  | 'review_deleted'
+  | 'review_restored'
+  | 'report_dismissed'
+  | 'no_show_cleared'
+  | 'match_cancelled';
+
+export type AdminActionTargetTypeRow = 'review' | 'review_report' | 'match';
+
+/**
+ * 관리자가 한 조치의 기록.
+ *
+ * admin_id 는 null 이 될 수 있다. 관리자 계정이 지워져도 기록은 남아야 해서
+ * on delete set null 로 두었기 때문이다.
+ */
+export type AdminActionRow = {
+  id: string;
+  admin_id: string | null;
+  action: AdminActionTypeRow;
+  target_type: AdminActionTargetTypeRow;
+  target_id: string;
+  note: string | null;
+  created_at: string;
 };
 
 /**
@@ -363,6 +474,47 @@ export const MatchStatusFromRow: Record<MatchStatusRow, MatchStatus> = {
   no_show: 'noShow',
 };
 
+/** 신고 사유 표기 변환 */
+export const ReviewReportReasonToRow: Record<ReviewReportReason, ReviewReportReasonRow> = {
+  abuse: 'abuse',
+  falseInfo: 'false_info',
+  privacy: 'privacy',
+  spam: 'spam',
+  other: 'other',
+};
+
+export const ReviewReportReasonFromRow: Record<ReviewReportReasonRow, ReviewReportReason> = {
+  abuse: 'abuse',
+  false_info: 'falseInfo',
+  privacy: 'privacy',
+  spam: 'spam',
+  other: 'other',
+};
+
+/** 관리자가 손대야 하는 매칭의 종류 표기 변환 */
+export const DisputedMatchKindFromRow: Record<DisputedMatchKindRow, DisputedMatchKind> = {
+  no_show: 'noShow',
+  overdue: 'overdue',
+};
+
+/** 관리자 조치 표기 변환 */
+export const AdminActionTypeFromRow: Record<AdminActionTypeRow, AdminActionType> = {
+  review_deleted: 'reviewDeleted',
+  review_restored: 'reviewRestored',
+  report_dismissed: 'reportDismissed',
+  no_show_cleared: 'noShowCleared',
+  match_cancelled: 'matchCancelled',
+};
+
+export const AdminActionTargetTypeFromRow: Record<
+  AdminActionTargetTypeRow,
+  AdminActionTargetType
+> = {
+  review: 'review',
+  review_report: 'reviewReport',
+  match: 'match',
+};
+
 /** 서버가 채우는 값(id, 시각)과 기본값이 있는 컬럼은 넣지 않아도 된다 */
 type Generated = 'id' | 'created_at' | 'updated_at';
 
@@ -454,6 +606,31 @@ export type Database = {
         Insert: Omit<ReviewRow, 'id' | 'created_at'> &
           Partial<Pick<ReviewRow, 'id' | 'created_at'>>;
         Update: Partial<ReviewRow>;
+        Relationships: [];
+      };
+      /**
+       * 후기 신고. 본인이 낸 신고만 읽을 수 있다.
+       *
+       * 쓰는 창구는 report_review() 하나뿐이고, 처리는 관리자 함수만 한다.
+       * 관리자가 큐를 읽는 것도 이 표가 아니라 admin_review_reports() 를 지난다 —
+       * 판단에 필요한 것이 신고 한 줄이 아니라 신고·후기·사람을 이은 한 줄이기 때문이다.
+       */
+      review_reports: {
+        Row: ReviewReportRow;
+        Insert: Omit<ReviewReportRow, 'id' | 'created_at' | 'status'> &
+          Partial<Pick<ReviewReportRow, 'id' | 'created_at' | 'status'>>;
+        Update: Partial<ReviewReportRow>;
+        Relationships: [];
+      };
+      /**
+       * 관리자가 한 조치의 기록. 관리자만 읽을 수 있고, 쓰는 창구는 앱에 없다
+       * (조치 함수들이 데이터베이스 안에서 직접 남긴다).
+       */
+      admin_actions: {
+        Row: AdminActionRow;
+        Insert: Omit<AdminActionRow, 'id' | 'created_at'> &
+          Partial<Pick<AdminActionRow, 'id' | 'created_at'>>;
+        Update: Partial<AdminActionRow>;
         Relationships: [];
       };
       /**
@@ -565,6 +742,61 @@ export type Database = {
       public_reviews: {
         Args: { subject_id: string };
         Returns: PublicReviewRow[];
+      };
+      /**
+       * 후기를 신고한다. 그 후기의 당사자 두 사람만 부를 수 있다.
+       * 이미 신고했으면 null 을 돌려준다 — 같은 후기를 두 번 신고해도 줄이 늘지 않는다.
+       */
+      report_review: {
+        Args: { target_review: string; reason: ReviewReportReasonRow; detail?: string | null };
+        Returns: string | null;
+      };
+      /**
+       * 아래 admin_ 함수들은 모두 관리자만 부를 수 있다.
+       * 관리자가 아니면 null 이 아니라 예외(42501)로 거절한다 — 권한이 없는 호출은
+       * "지금 할 수 없는 동작"이 아니라 일어나면 안 되는 일이고, 조용히 빈 값을
+       * 돌려주면 앱이 그것을 "신고가 없다"로 읽는다.
+       */
+      admin_review_reports: {
+        Args: { target_status?: ReviewReportStatusRow };
+        Returns: AdminReviewReportRow[];
+      };
+      /**
+       * 후기를 지운 표시를 하고 그 후기의 열린 신고를 함께 마감한다.
+       * 없는 후기이거나 이미 지워졌으면 null 을 돌려준다.
+       */
+      admin_delete_review: {
+        Args: { target_review: string; note?: string | null };
+        Returns: string | null;
+      };
+      /** 잘못 지운 후기를 되돌린다. 그때 마감했던 신고는 반려로 바뀐다. */
+      admin_restore_review: {
+        Args: { target_review: string; note?: string | null };
+        Returns: string | null;
+      };
+      /** 신고를 반려한다. 후기는 그대로 남는다. */
+      admin_dismiss_report: {
+        Args: { target_report: string; note?: string | null };
+        Returns: string | null;
+      };
+      /** 노쇼로 신고된 매칭과, 끝날 날이 지났는데 아직 살아 있는 매칭. */
+      admin_disputed_matches: {
+        Args: Record<string, never>;
+        Returns: DisputedMatchRow[];
+      };
+      /**
+       * 잘못된 노쇼 신고를 되돌린다.
+       * 매칭은 accepted 로 돌아가지 않고 취소로 남는다 — 그 사이 다른 간병인이
+       * 같은 요청을 수락했을 수 있어서, 되돌리면 살아 있는 매칭이 둘이 된다.
+       */
+      admin_clear_no_show: {
+        Args: { target_match: string; note?: string | null };
+        Returns: string | null;
+      };
+      /** 살아 있는 매칭을 관리자가 끊는다. 요청 처리는 cancel_match() 와 같은 규칙이다. */
+      admin_cancel_match: {
+        Args: { target_match: string; reason?: string | null };
+        Returns: string | null;
       };
       /**
        * 이 과정의 퀴즈 문항. 정답과 해설은 내려오지 않는다.

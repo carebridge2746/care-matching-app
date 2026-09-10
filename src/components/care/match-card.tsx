@@ -12,6 +12,7 @@ import {
   CareTypeLabels,
   GenderLabels,
   isMatchLive,
+  MatchCancellerLabels,
   MatchPartyLabels,
   MatchStatusLabels,
   MatchStatusTones,
@@ -111,7 +112,7 @@ export function MatchCard({
       ) : match.status === 'cancelled' && match.cancelledAt ? (
         <AppText variant="caption" tone="danger">
           {formatKoreanTimestamp(match.cancelledAt)}
-          {match.cancelledBy ? ` · ${MatchPartyLabels[match.cancelledBy]}가 취소` : ''}
+          {match.cancelledBy ? ` · ${MatchCancellerLabels[match.cancelledBy]}가 취소` : ''}
           {match.cancelReason ? ` · ${match.cancelReason}` : ''}
         </AppText>
       ) : match.status === 'noShow' && match.noShowAt ? (

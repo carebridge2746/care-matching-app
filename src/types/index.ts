@@ -355,6 +355,24 @@ export const MatchPartyLabels: Record<MatchParty, string> = {
 };
 
 /**
+ * 간병을 끊은 쪽.
+ *
+ * 당사자 둘에 관리자가 더해진다. MatchParty 를 넓히지 않고 따로 둔 것은,
+ * MatchParty 가 "지금 이 화면을 누가 보고 있는가"로도 쓰이기 때문이다 —
+ * 관리자는 당사자 화면을 보지 않는다.
+ *
+ * 관리자가 끊은 간병을 '보호자가 취소'로 보여 주면, 당사자에게 상대가 그만둔 것으로
+ * 읽힌다. 실제로 일어난 일과 다른 문장이라 값을 따로 갖는다.
+ */
+export type MatchCanceller = MatchParty | 'admin';
+
+export const MatchCancellerLabels: Record<MatchCanceller, string> = {
+  guardian: '보호자',
+  caregiver: '간병인',
+  admin: '관리자',
+};
+
+/**
  * 상대방 정보.
  *
  * 연락처는 매칭이 성사되어 있는 동안에만 들어 있다.
@@ -401,8 +419,8 @@ export type Match = {
   startedAt?: string;
   completedAt?: string;
   cancelledAt?: string;
-  /** 취소한 쪽. 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다. */
-  cancelledBy?: MatchParty;
+  /** 끊은 쪽. 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다. */
+  cancelledBy?: MatchCanceller;
   cancelReason?: string;
   /**
    * 노쇼로 신고된 시각.
@@ -550,6 +568,14 @@ export type Review = {
   rating: number;
   comment?: string;
   createdAt: string;
+  /**
+   * 관리자가 지운 후기면 그 시각.
+   *
+   * 행을 실제로 지우지 않는 이유는 두 가지다. 지우면 매칭당 한 번이라는 제약이 풀려
+   * 삭제 후 재작성으로 후기 수정이 우회되고, 분쟁 기록도 함께 사라진다.
+   * 평가받은 사람의 목록과 평균에서는 빠지지만, 작성자 본인에게는 삭제된 사실이 보인다.
+   */
+  deletedAt?: string;
 };
 
 /**
@@ -715,3 +741,169 @@ export type QuizGrade = {
 export function formatQuizScore(attempt: Pick<QuizAttempt, 'correctCount' | 'questionCount' | 'score'>): string {
   return `${attempt.questionCount}문항 중 ${attempt.correctCount}문항 정답 · ${attempt.score}점`;
 }
+
+// --- 신고와 관리자 조치 ---------------------------------------------------------
+
+/**
+ * 후기를 신고하는 사유.
+ *
+ * '기타' 하나로 받지 않고 나눈다. 관리자가 무엇을 확인해야 하는지가 사유마다 다르기
+ * 때문이다 — 욕설은 문장을 읽으면 되지만, 사실과 다르다는 신고는 간병 기록까지 봐야 한다.
+ */
+export type ReviewReportReason = 'abuse' | 'falseInfo' | 'privacy' | 'spam' | 'other';
+
+export const ReviewReportReasons: ReviewReportReason[] = [
+  'abuse',
+  'falseInfo',
+  'privacy',
+  'spam',
+  'other',
+];
+
+export const ReviewReportReasonLabels: Record<ReviewReportReason, string> = {
+  abuse: '욕설이나 비방',
+  falseInfo: '사실과 다른 내용',
+  privacy: '개인정보가 드러남',
+  spam: '광고나 도배',
+  other: '그 밖의 사유',
+};
+
+/**
+ * 신고의 처리 상태.
+ *
+ * accepted 는 신고한 사람 편에서 "받아들여졌다"는 뜻이다 — 후기가 지워졌다.
+ * 신고당한 작성자에게는 알리지 않는다. 반려된 신고까지 알리면 신고가 곧 시비가 된다.
+ */
+export type ReviewReportStatus = 'open' | 'accepted' | 'dismissed';
+
+export const ReviewReportStatusLabels: Record<ReviewReportStatus, string> = {
+  open: '확인 중',
+  accepted: '후기 삭제됨',
+  dismissed: '반려됨',
+};
+
+/** 신고 화면이 채우는 값 */
+export type ReviewReportInput = {
+  reason: ReviewReportReason;
+  detail?: string;
+};
+
+/** 내가 낸 신고. 어떻게 처리되었는지는 본인만 본다. */
+export type ReviewReport = {
+  id: string;
+  reviewId: string;
+  reason: ReviewReportReason;
+  detail?: string;
+  status: ReviewReportStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolutionNote?: string;
+};
+
+/**
+ * 관리자 신고 큐의 한 줄.
+ *
+ * 신고 한 줄이 아니라 신고·후기·사람 셋을 이어 붙인 것이다. 판단에는 셋이 모두 필요하고,
+ * 앱이 나눠 조회해서 스스로 잇게 두면 그 사이에 다른 관리자가 후기를 지울 수 있다.
+ *
+ * 이름을 가리지 않는 유일한 창구다. 관리자는 누가 누구에게 무엇을 썼는지 봐야 판단할 수 있다.
+ */
+export type AdminReviewReport = {
+  reportId: string;
+  reviewId: string;
+  matchId: string;
+  reason: ReviewReportReason;
+  detail?: string;
+  status: ReviewReportStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolutionNote?: string;
+  /** 같은 후기에 달린 신고 수. 한 줄만 보고는 알 수 없다. */
+  reportCount: number;
+  reporterId: string;
+  reporterName: string;
+
+  /** 신고당한 후기 */
+  rating: number;
+  comment?: string;
+  reviewCreatedAt: string;
+  /** 이미 지워졌으면 그 시각. 지워진 뒤에도 큐에서 사라지지 않는다. */
+  reviewDeletedAt?: string;
+  reviewerId: string;
+  reviewerName: string;
+  revieweeId: string;
+  revieweeName: string;
+};
+
+/** 관리자가 손대야 하는 매칭의 종류 */
+export type DisputedMatchKind = 'noShow' | 'overdue';
+
+export const DisputedMatchKindLabels: Record<DisputedMatchKind, string> = {
+  noShow: '노쇼 신고됨',
+  overdue: '종료일 지남',
+};
+
+export const DisputedMatchKindDescriptions: Record<DisputedMatchKind, string> = {
+  noShow: '보호자가 간병인이 오지 않았다고 신고했습니다. 신고가 잘못되었다면 되돌릴 수 있습니다.',
+  overdue: '끝날 날이 지났는데 아직 살아 있는 간병입니다. 양쪽 모두 상태를 옮기지 않았습니다.',
+};
+
+/**
+ * 관리자 화면이 보는 매칭.
+ *
+ * match_details 뷰(당사자용)와 달리 환자 정보와 연락처가 담기지 않는다.
+ * 관리자가 판단하는 데 필요한 것은 "누구와 누구의 언제 간병인가"까지다.
+ */
+export type DisputedMatch = {
+  kind: DisputedMatchKind;
+  matchId: string;
+  requestId: string;
+  status: MatchStatus;
+  region: string;
+  startDate: string;
+  endDate?: string;
+  acceptedAt: string;
+  startedAt?: string;
+  noShowAt?: string;
+  noShowNote?: string;
+  guardianId: string;
+  guardianName: string;
+  caregiverId: string;
+  caregiverName: string;
+};
+
+/** 관리자가 한 조치의 종류 */
+export type AdminActionType =
+  | 'reviewDeleted'
+  | 'reviewRestored'
+  | 'reportDismissed'
+  | 'noShowCleared'
+  | 'matchCancelled';
+
+export const AdminActionLabels: Record<AdminActionType, string> = {
+  reviewDeleted: '후기 삭제',
+  reviewRestored: '후기 복구',
+  reportDismissed: '신고 반려',
+  noShowCleared: '노쇼 신고 취소',
+  matchCancelled: '매칭 강제 종료',
+};
+
+export type AdminActionTargetType = 'review' | 'reviewReport' | 'match';
+
+/**
+ * 관리자가 한 일 한 줄.
+ *
+ * 조치한 자리에는 결과만 남고 판단은 남지 않는다 — 노쇼 신고를 되돌리면 노쇼였다는
+ * 사실 자체가 매칭에서 사라지고, 일반 취소와 구분되지 않는다.
+ * 무슨 일이 있었는지는 이 기록에만 있다.
+ */
+export type AdminAction = {
+  id: string;
+  /** 조치한 관리자. 계정이 지워지면 비어 있지만 기록 자체는 남는다. */
+  adminId?: string;
+  action: AdminActionType;
+  targetType: AdminActionTargetType;
+  targetId: string;
+  note?: string;
+  createdAt: string;
+};

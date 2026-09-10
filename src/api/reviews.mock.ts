@@ -1,6 +1,14 @@
 import { ApiError } from '@/api/api-error';
 import { readMockUsers } from '@/api/auth.mock';
-import { delay, loadMatches, loadReviews, saveReviews } from '@/api/mock-store';
+import {
+  delay,
+  loadMatches,
+  loadReviewReports,
+  loadReviews,
+  saveReviewReports,
+  saveReviews,
+  type StoredReviewReport,
+} from '@/api/mock-store';
 import type { ReviewsAdapter } from '@/api/reviews.types';
 import { maskPersonName } from '@/lib/privacy';
 import {
@@ -26,9 +34,27 @@ function createId(): string {
   return `review-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createReportId(): string {
+  return `report-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /** 최근에 받은 후기가 위로 오도록 정렬한다 */
 function byNewest(a: { createdAt: string }, b: { createdAt: string }): number {
   return b.createdAt.localeCompare(a.createdAt);
+}
+
+/**
+ * 관리자가 지운 후기를 걸러낸다.
+ *
+ * Supabase 쪽에서 user_ratings 뷰와 public_reviews() 에 붙인 `deleted_at is null` 과
+ * 같은 조건이며, 두 모드가 반드시 같은 답을 내야 하는 자리다. 한쪽에서만 빠지면
+ * 목록에는 없는데 평균에는 남는 상태가 되고, 그건 아무도 바로 알아차리지 못한다.
+ *
+ * 작성자 본인의 목록(listWritten)에는 일부러 쓰지 않는다 — 자기 후기가 왜 사라졌는지는
+ * 본인에게 보여야 한다.
+ */
+function isLive(review: Review): boolean {
+  return review.deletedAt === undefined;
 }
 
 function toRating(reviews: Review[]): UserRating {
@@ -56,7 +82,7 @@ export const mockReviewsAdapter: ReviewsAdapter = {
     const [reviews, users] = await Promise.all([loadReviews(), readMockUsers()]);
 
     return reviews
-      .filter((review) => review.revieweeId === userId)
+      .filter((review) => review.revieweeId === userId && isLive(review))
       .sort(byNewest)
       .map((review): PublicReview => {
         const reviewer = users.find((user) => user.id === review.reviewerId);
@@ -75,7 +101,7 @@ export const mockReviewsAdapter: ReviewsAdapter = {
   async ratingOf(userId) {
     await delay();
     const reviews = await loadReviews();
-    return toRating(reviews.filter((review) => review.revieweeId === userId));
+    return toRating(reviews.filter((review) => review.revieweeId === userId && isLive(review)));
   },
 
   async create(matchId, reviewerId, input) {
@@ -98,6 +124,8 @@ export const mockReviewsAdapter: ReviewsAdapter = {
 
     const reviews = await loadReviews();
 
+    // 지워진 후기도 함께 센다. 지워졌다고 다시 쓸 수 있게 되면 삭제가 곧 재작성의 기회가 된다 —
+    // Supabase 쪽에서는 reviews_one_per_reviewer 유니크 제약이 같은 일을 한다.
     if (reviews.some((review) => review.matchId === matchId && review.reviewerId === reviewerId)) {
       throw new ApiError('invalid_state', '이미 이 간병에 후기를 남기셨습니다.');
     }
@@ -117,6 +145,48 @@ export const mockReviewsAdapter: ReviewsAdapter = {
     await saveReviews([...reviews, review]);
     return review;
   },
+
+  async report(reviewId, reporterId, input) {
+    await delay();
+
+    const reviews = await loadReviews();
+    const review = reviews.find((item) => item.id === reviewId);
+
+    // 당사자가 아닌 사람에게는 "없다"고 답한다.
+    // Supabase 쪽 report_review() 도 없는 후기와 남의 후기를 구분해서 알려 주지 않는다.
+    if (!review || (review.reviewerId !== reporterId && review.revieweeId !== reporterId)) {
+      throw new ApiError('not_found', '후기를 찾지 못했습니다. 목록을 새로 불러와 주세요.');
+    }
+    if (!isLive(review)) {
+      throw new ApiError('invalid_state', '이미 지워진 후기입니다.');
+    }
+
+    const reports = await loadReviewReports();
+
+    if (reports.some((item) => item.reviewId === reviewId && item.reporterId === reporterId)) {
+      throw new ApiError('invalid_state', '이미 신고하셨거나, 신고할 수 없는 후기입니다.');
+    }
+
+    const detail = input.detail?.trim();
+    const report: StoredReviewReport = {
+      id: createReportId(),
+      reviewId,
+      reporterId,
+      reason: input.reason,
+      ...(detail ? { detail } : {}),
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+
+    await saveReviewReports([...reports, report]);
+    return report;
+  },
+
+  async listReports(reporterId) {
+    await delay();
+    const reports = await loadReviewReports();
+    return reports.filter((report) => report.reporterId === reporterId).sort(byNewest);
+  },
 };
 
 /** 추천 목록이 후보의 평균 별점을 붙일 때 쓴다 (Supabase 쪽에서는 user_ratings 뷰가 같은 일을 한다) */
@@ -124,7 +194,10 @@ export async function readMockRatings(): Promise<Map<string, UserRating>> {
   const reviews = await loadReviews();
   const byUser = new Map<string, Review[]>();
 
-  for (const review of reviews) {
+  // 지워진 후기는 추천 목록의 평균에도 들어가지 않는다.
+  // Supabase 쪽에서는 recommendation_candidates() 가 user_ratings 뷰를 조인하므로
+  // 뷰에 붙인 조건이 그대로 따라온다.
+  for (const review of reviews.filter(isLive)) {
     byUser.set(review.revieweeId, [...(byUser.get(review.revieweeId) ?? []), review]);
   }
 

@@ -1,11 +1,13 @@
 import { readJson, writeJson } from '@/lib/storage';
 import type {
+  AdminAction,
   CareRequest,
   CaregiverProfile,
   Match,
   Patient,
   QuizAttempt,
   Review,
+  ReviewReport,
   TrainingCompletion,
 } from '@/types';
 
@@ -26,6 +28,8 @@ const CareRequestsKey = 'careapp.mock.care-requests';
 const CaregiverProfilesKey = 'careapp.mock.caregiver-profiles';
 const MatchesKey = 'careapp.mock.matches';
 const ReviewsKey = 'careapp.mock.reviews';
+const ReviewReportsKey = 'careapp.mock.review-reports';
+const AdminActionsKey = 'careapp.mock.admin-actions';
 const QuizAttemptsKey = 'careapp.mock.quiz-attempts';
 const TrainingCompletionsKey = 'careapp.mock.training-completions';
 
@@ -79,6 +83,39 @@ export async function loadReviews(): Promise<Review[]> {
 
 export async function saveReviews(reviews: Review[]): Promise<void> {
   await writeJson(ReviewsKey, reviews);
+}
+
+/**
+ * 후기 신고.
+ *
+ * 도메인 타입(ReviewReport)에는 누가 신고했는지가 없다. 앱에서는 언제나 내 신고만
+ * 보기 때문이고, Supabase 쪽에서는 "본인 신고 조회" 정책이 그 일을 대신한다.
+ * 여기서는 모든 사용자가 한 저장소를 나눠 쓰므로 저장할 때만 주인을 함께 적어 둔다 —
+ * 퀴즈 응시·수료와 같은 방식이다.
+ */
+export type StoredReviewReport = ReviewReport & { reporterId: string };
+
+export async function loadReviewReports(): Promise<StoredReviewReport[]> {
+  return (await readJson<StoredReviewReport[]>(ReviewReportsKey)) ?? [];
+}
+
+export async function saveReviewReports(reports: StoredReviewReport[]): Promise<void> {
+  await writeJson(ReviewReportsKey, reports);
+}
+
+/**
+ * 관리자가 한 조치의 기록.
+ *
+ * Mock 모드에도 남긴다. 관리자 화면이 이 목록을 그대로 보여 주기 때문이고,
+ * 무엇보다 노쇼 신고를 되돌리면 노쇼였다는 사실이 매칭에서 사라지는 것은
+ * Supabase 쪽과 똑같아서, 로그가 없으면 두 모드가 다른 답을 낸다.
+ */
+export async function loadAdminActions(): Promise<AdminAction[]> {
+  return (await readJson<AdminAction[]>(AdminActionsKey)) ?? [];
+}
+
+export async function saveAdminActions(actions: AdminAction[]): Promise<void> {
+  await writeJson(AdminActionsKey, actions);
 }
 
 /**

@@ -3,7 +3,7 @@ import { MatchStatusFromRow, type MatchDetailRow } from '@/api/database.types';
 import type { MatchHistoryAdapter } from '@/api/match-history.types';
 import { getSupabaseClient } from '@/api/supabase-client';
 import { toApiError } from '@/api/supabase-error';
-import type { CareMatch } from '@/types';
+import type { CareMatch, MatchCanceller } from '@/types';
 
 /**
  * Supabase 매칭 이력 어댑터.
@@ -20,6 +20,19 @@ import type { CareMatch } from '@/types';
 const Columns =
   'id, request_id, guardian_id, caregiver_id, status, accepted_at, started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, no_show_at, no_show_note, created_at, updated_at, request_text, care_type, region, start_date, end_date, daily_start_time, daily_end_time, required_skills, budget_per_day, patient_name, patient_birth_year, patient_gender, patient_mobility, patient_cognition, patient_conditions, patient_care_notes, caregiver_name, caregiver_phone, guardian_name, guardian_phone';
 
+/**
+ * 누가 이 간병을 끊었는가.
+ *
+ * 당사자 둘과 견줘 보고 어느 쪽도 아니면 관리자다 (admin_cancel_match 와
+ * admin_clear_no_show 가 관리자를 이 자리에 적는다).
+ */
+function toCanceller(row: MatchDetailRow): MatchCanceller {
+  if (row.cancelled_by === row.caregiver_id) {
+    return 'caregiver';
+  }
+  return row.cancelled_by === row.guardian_id ? 'guardian' : 'admin';
+}
+
 function toCareMatch(row: MatchDetailRow): CareMatch {
   return {
     id: row.id,
@@ -31,10 +44,10 @@ function toCareMatch(row: MatchDetailRow): CareMatch {
     ...(row.started_at ? { startedAt: row.started_at } : {}),
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
     ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
-    // 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다
-    ...(row.cancelled_by
-      ? { cancelledBy: row.cancelled_by === row.caregiver_id ? 'caregiver' : 'guardian' }
-      : {}),
+    // 화면에는 식별자가 아니라 '보호자가 취소'처럼 보여 준다.
+    // 어느 당사자도 아니면 관리자가 끊은 것이다 — 둘 중 하나로 몰아 버리면
+    // 당사자에게 상대가 그만둔 것으로 읽힌다.
+    ...(row.cancelled_by ? { cancelledBy: toCanceller(row) } : {}),
     ...(row.cancel_reason ? { cancelReason: row.cancel_reason } : {}),
     // 신고한 사람은 담지 않는다 — 노쇼는 언제나 보호자가 신고한다
     ...(row.no_show_at ? { noShowAt: row.no_show_at } : {}),
