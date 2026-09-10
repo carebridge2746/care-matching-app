@@ -44,7 +44,8 @@ create policy "본인 프로필 수정"
   with check ((select auth.uid()) = id);
 
 -- insert 정책은 두지 않는다. 프로필 생성은 아래 트리거만 할 수 있다.
--- (관리자가 모든 프로필을 보는 정책은 Phase 11에서 추가한다.)
+-- 자기 role 을 바꾸지 못하게 막는 트리거와, 관리자가 모든 프로필을 보는 정책은
+-- Phase 11 의 50) 51) 에서 함께 붙인다.
 
 -- 3) 회원가입 시 프로필 자동 생성 --------------------------------------------
 --
@@ -2531,3 +2532,123 @@ grant select on public.match_details to authenticated;
 --   자동 노쇼 판정: 시간이 지났다는 이유만으로 노쇼를 매기지 않는다. 간병인이 와 있는데
 --     시작 버튼만 누르지 않았을 수도 있고, 둘이 이야기해서 미뤘을 수도 있다.
 --     화면은 "확인이 필요합니다"까지만 말하고 판단은 그 자리에 있던 사람에게 맡긴다.
+
+-- ===========================================================================
+-- Phase 11 — 관리자
+-- ===========================================================================
+--
+-- 여기까지 오는 동안 "당사자가 조용히 바꿀 수 없다"를 여러 번 세워 두었다.
+-- 후기는 고치거나 지울 수 없고(Phase 8), 노쇼 신고도 취소할 수 없다(Phase 10).
+-- 그 규칙이 옳으려면, 잘못 남은 기록을 되돌리는 창구가 어딘가에는 있어야 한다.
+-- 그 창구가 관리자다.
+--
+-- 그래서 관리자는 다른 역할과 성격이 다르다. 보호자와 간병인은 자기 자료를 다루지만
+-- 관리자는 남의 기록을 바꾼다. 두 가지를 먼저 못 박고 시작한다.
+--
+--   (1) 관리자가 되는 길은 하나뿐이다 — 운영자가 직접 바꿔 준다.
+--   (2) 관리자가 한 일은 모두 남는다.
+--
+-- 이 절은 (1)만 다룬다. (2)의 감사 로그와 실제 조치 창구는 뒤따르는 절에서 연다.
+
+-- 49) 관리자 판별 --------------------------------------------------------------
+--
+-- is_caregiver() 와 같은 이유로 security definer 로 감싼다. 정책이나 뷰 안에서
+-- profiles 를 그대로 조회하면 profiles 의 정책이 다시 걸려 재귀가 생긴다.
+--
+-- JWT 클레임(app_metadata.role)에 역할을 실어 두는 방법도 있다. 조회가 한 번 줄지만,
+-- 클레임은 로그인 시점의 값이라 권한을 거둔 뒤에도 토큰이 만료될 때까지 살아 있다.
+-- 관리자 권한은 거두는 즉시 끊기는 편이 낫다.
+--
+-- 아래 50) 의 트리거가 이 함수를 부르므로 먼저 만든다.
+
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = (select auth.uid()) and p.role = 'admin'
+  );
+$$;
+
+comment on function public.is_admin() is '로그인한 사용자가 관리자인지 확인한다. 정책·뷰 안의 재귀를 피하려고 함수로 감싼다.';
+
+-- 50) 이용 유형은 스스로 바꿀 수 없다 -----------------------------------------
+--
+-- Phase 2 에서 가입 트리거(handle_new_user)가 user_metadata 의 role 을 걸러내므로
+-- "admin 으로 가입"은 불가능하다. 그런데 가입한 뒤가 열려 있었다.
+--
+-- "본인 프로필 수정" 정책은 자기 행 전체를 열어 준다. RLS 는 행 단위라 컬럼을 가리지
+-- 못하기 때문이다. anon 키는 앱 번들에 그대로 들어 있으므로, 로그인한 사용자라면
+-- 누구나 REST 로 이렇게 부를 수 있었다.
+--
+--   update profiles set role = 'admin' where id = <자기 id>;
+--
+-- 앱에는 프로필을 수정하는 경로가 아직 없어서 드러나지 않았을 뿐이다.
+-- 관리자 권한을 만들기 전에 이것부터 막는다 — 막지 않으면 아래의 모든 권한 설계가
+-- 자기 행 update 한 번으로 우회된다.
+--
+-- 정책을 지우지 않고 트리거로 컬럼만 잠근다. 이름과 전화번호는 본인이 고칠 수 있어야
+-- 하고(프로필 수정 화면이 생기면 그 경로가 필요하다), 잠글 것은 두 컬럼뿐이다.
+--
+--   role  — 권한 그 자체다.
+--   email — 운영자가 계정을 찾는 열쇠다. 관리자 지정은 이메일로 하는데(아래 51 참고),
+--           본인이 남의 이메일로 바꿀 수 있으면 운영자가 엉뚱한 계정을 올릴 수 있다.
+--
+-- id 는 정책의 with check ((select auth.uid()) = id) 가 이미 붙들고 있어서 따로 막지 않는다.
+
+create or replace function public.guard_profile_self_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  -- 로그인 세션 없이 도는 경우는 운영자다 — SQL Editor 와 service_role 키에는
+  -- JWT 의 sub 가 없어서 auth.uid() 가 null 이 된다. 이 경로로 관리자를 지정한다.
+  if (select auth.uid()) is null or public.is_admin() then
+    return new;
+  end if;
+
+  if new.role is distinct from old.role then
+    raise exception '이용 유형은 스스로 바꿀 수 없습니다.' using errcode = '42501';
+  end if;
+
+  if new.email is distinct from old.email then
+    raise exception '이메일은 프로필에서 바꿀 수 없습니다.' using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+comment on function public.guard_profile_self_update() is
+  '본인이 자기 role 과 email 을 바꾸는 것을 막는다. RLS 는 컬럼을 가리지 못해 트리거로 잠근다.';
+
+drop trigger if exists profiles_guard_self_update on public.profiles;
+create trigger profiles_guard_self_update
+  before update on public.profiles
+  for each row execute function public.guard_profile_self_update();
+
+-- 51) 관리자가 사람을 찾는 창구 ------------------------------------------------
+--
+-- 관리자에게 여는 테이블 정책은 이것 하나뿐이다. 신고된 후기와 분쟁 매칭은
+-- 테이블을 통째로 열지 않고 뒤따르는 절의 admin_*() 함수로 내보낸다 —
+-- 관리자가 무엇을 볼 수 있는지가 함수 목록에 다 드러나고, 모든 조치가
+-- 감사 로그를 남길 자리를 함수 안에 갖게 된다.
+--
+-- select 정책이 여럿이면 or 로 묶이므로, 이 정책이 늘어도 "본인 프로필 조회"는 그대로다.
+
+drop policy if exists "관리자 프로필 조회" on public.profiles;
+create policy "관리자 프로필 조회"
+  on public.profiles for select
+  to authenticated
+  using (public.is_admin());
+
+-- 관리자 지정은 앱에 창구를 두지 않는다. 아래 문장의 이메일을 바꿔서 SQL Editor 에서 실행한다.
+-- 50) 의 트리거는 auth.uid() 가 null 인 이 경로를 통과시킨다.
+--
+--   update public.profiles set role = 'admin' where email = 'admin@example.com';

@@ -152,6 +152,11 @@ export const mockAuthAdapter: AuthAdapter = {
   async signUp({ email, password, name, role, phone }: SignUpInput) {
     await delay(NetworkDelayMs);
 
+    // 관리자는 가입으로 만들 수 없다. 화면이 보호자·간병인만 보여 주지만 판정은
+    // 어댑터에서도 한 번 더 한다 — Supabase 쪽에서는 handle_new_user() 트리거가
+    // 앱이 보낸 값과 무관하게 같은 일을 하므로, 두 모드가 같은 답을 내야 한다.
+    const signUpRole: AppUser['role'] = role === 'caregiver' ? 'caregiver' : 'guardian';
+
     const accounts = await loadAccounts();
     const normalizedEmail = normalizeEmail(email);
 
@@ -163,11 +168,11 @@ export const mockAuthAdapter: AuthAdapter = {
     }
 
     const account: MockAccount = {
-      id: createId(role),
+      id: createId(signUpRole),
       email: normalizedEmail,
       password,
       name: name.trim(),
-      role,
+      role: signUpRole,
       ...(phone?.trim() ? { phone: phone.trim() } : {}),
     };
 
