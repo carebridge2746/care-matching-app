@@ -2885,3 +2885,494 @@ comment on function public.report_review(uuid, text, text) is '후기를 신고�
 
 revoke all on function public.report_review(uuid, text, text) from public, anon;
 grant execute on function public.report_review(uuid, text, text) to authenticated;
+
+-- 57) 관리자가 한 일 -----------------------------------------------------------
+--
+-- 관리자는 남의 기록을 바꾼다. 바꾼 자리에는 결과만 남고 판단은 남지 않는다 —
+-- 지워진 후기에는 deleted_reason 이 남지만, 노쇼를 되돌리면 노쇼였다는 사실 자체가
+-- 매칭에서 사라진다. 그래서 조치는 따로 적는다.
+--
+-- admin_id 는 not null 이 아니다. 관리자 계정이 지워져도 기록은 남아야 하므로
+-- on delete set null 로 두고, 누구였는지는 지워지되 무슨 일이 있었는지는 남는다.
+-- (on delete cascade 로 두면 계정을 지우는 것이 곧 자기 이력을 지우는 일이 된다.)
+--
+-- target_id 에는 외래키를 걸지 않는다. 대상이 나중에 사라져도 — 계정이 지워지면서
+-- 후기나 매칭이 함께 지워지는 경우가 있다 — 로그는 남아야 한다.
+
+create table if not exists public.admin_actions (
+  id uuid primary key default gen_random_uuid(),
+  admin_id uuid references public.profiles (id) on delete set null,
+
+  action text not null check (action in (
+    'review_deleted', 'review_restored', 'report_dismissed', 'no_show_cleared', 'match_cancelled'
+  )),
+  target_type text not null check (target_type in ('review', 'review_report', 'match')),
+  target_id uuid not null,
+
+  note text,
+  created_at timestamptz not null default now()
+);
+
+comment on table public.admin_actions is '관리자가 한 조치의 기록. 조치한 자리에 남지 않는 판단 근거를 여기에 남긴다.';
+comment on column public.admin_actions.admin_id is '조치한 관리자. 계정이 지워지면 비워지지만 기록 자체는 남는다.';
+comment on column public.admin_actions.target_id is '대상의 id. 대상이 사라져도 로그는 남아야 해서 외래키를 걸지 않는다.';
+
+create index if not exists admin_actions_created_idx on public.admin_actions (created_at desc);
+create index if not exists admin_actions_target_idx on public.admin_actions (target_type, target_id);
+
+alter table public.admin_actions enable row level security;
+
+drop policy if exists "관리자 조치 기록 조회" on public.admin_actions;
+create policy "관리자 조치 기록 조회"
+  on public.admin_actions for select
+  to authenticated
+  using (public.is_admin());
+
+-- insert 정책은 두지 않는다. 기록은 아래 함수만 남긴다.
+
+-- 조치 함수들이 같은 네 줄을 되풀이하지 않도록 묶어 둔다.
+-- 이 함수는 앱에 열지 않는다 — 열어 두면 아무나 없는 조치를 기록할 수 있다.
+-- 부르는 쪽이 모두 security definer 라 current_user 가 소유자이므로, 권한을 거둬도 부를 수 있다.
+create or replace function public.log_admin_action(
+  action_name text,
+  target_kind text,
+  target_row uuid,
+  note text default null
+)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  insert into public.admin_actions (admin_id, action, target_type, target_id, note)
+  values ((select auth.uid()), action_name, target_kind, target_row, nullif(trim(note), ''));
+$$;
+
+revoke all on function public.log_admin_action(text, text, uuid, text) from public, anon, authenticated;
+
+-- 58) 신고 큐 ------------------------------------------------------------------
+--
+-- 관리자가 신고를 읽는 유일한 창구다. review_reports 에 관리자용 select 정책을 두는
+-- 대신 이 함수를 쓰는 이유는, 판단에 필요한 것이 신고 한 줄이 아니라 신고·후기·사람
+-- 셋을 이어 붙인 한 줄이기 때문이다. 테이블을 열면 앱이 세 번 조회해서 스스로 잇게 된다.
+--
+-- 이름을 가리지 않는다. mask_person_name() 은 사용자끼리의 창구를 위한 것이고,
+-- 관리자는 누가 누구에게 무엇을 썼는지를 봐야 판단할 수 있다.
+--
+-- plpgsql 의 returns table 이름은 변수가 되어 컬럼과 부딪힐 수 있다.
+-- 아래 조회의 모든 컬럼을 별칭으로 한정한 것은 그 때문이다.
+
+create or replace function public.admin_review_reports(target_status text default 'open')
+returns table (
+  report_id uuid,
+  review_id uuid,
+  match_id uuid,
+  reason text,
+  detail text,
+  status text,
+  created_at timestamptz,
+  resolved_at timestamptz,
+  resolution_note text,
+  report_count integer,
+  reporter_id uuid,
+  reporter_name text,
+  rating smallint,
+  comment text,
+  review_created_at timestamptz,
+  review_deleted_at timestamptz,
+  reviewer_id uuid,
+  reviewer_name text,
+  reviewee_id uuid,
+  reviewee_name text
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  if target_status is null or target_status not in ('open', 'accepted', 'dismissed') then
+    raise exception '신고 상태가 올바르지 않습니다.' using errcode = '23514';
+  end if;
+
+  return query
+  select
+    rr.id,
+    rr.review_id,
+    rv.match_id,
+    rr.reason,
+    rr.detail,
+    rr.status,
+    rr.created_at,
+    rr.resolved_at,
+    rr.resolution_note,
+    -- 같은 후기에 몇 사람이 신고했는지. 한 줄만 보고는 알 수 없다.
+    (select count(*)::integer from public.review_reports o where o.review_id = rr.review_id),
+    rr.reporter_id,
+    rp.name,
+    rv.rating,
+    rv.comment,
+    rv.created_at,
+    rv.deleted_at,
+    rv.reviewer_id,
+    wr.name,
+    rv.reviewee_id,
+    we.name
+  from public.review_reports rr
+  join public.reviews rv on rv.id = rr.review_id
+  join public.profiles rp on rp.id = rr.reporter_id
+  join public.profiles wr on wr.id = rv.reviewer_id
+  join public.profiles we on we.id = rv.reviewee_id
+  where rr.status = target_status
+  -- 오래 기다린 신고가 위로. review_reports_open_idx 가 이 순서 그대로다.
+  order by rr.created_at
+  limit 100;
+end;
+$$;
+
+comment on function public.admin_review_reports(text) is '관리자가 읽는 신고 큐. 신고·후기·사람을 이어 붙여 한 줄로 내보낸다.';
+
+revoke all on function public.admin_review_reports(text) from public, anon;
+grant execute on function public.admin_review_reports(text) to authenticated;
+
+-- 59) 후기 지우기와 되돌리기 ---------------------------------------------------
+--
+-- 지우는 것과 되돌리는 것을 한 쌍으로 둔다. 관리자도 잘못 판단하고, 잘못 지운 후기를
+-- 되돌릴 길이 없으면 관리자는 지우기를 망설이게 된다 — 그러면 창구가 있으나 마나다.
+--
+-- 신고 없이도 지울 수 있다. 신고가 들어오기 전에 관리자가 먼저 발견하는 경우가 있고,
+-- 그때 신고를 기다리게 할 까닭이 없다.
+
+create or replace function public.admin_delete_review(target_review uuid, note text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  deleted_id uuid;
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.reviews r
+     set deleted_at = now(),
+         deleted_by = actor,
+         deleted_reason = nullif(trim(note), '')
+   where r.id = target_review
+     and r.deleted_at is null
+  returning r.id into deleted_id;
+
+  -- 없는 후기와 이미 지워진 후기를 구분하지 않는다. 둘 다 "지울 것이 없다"이며,
+  -- 목록을 띄워 둔 사이에 다른 관리자가 먼저 지우는 일은 오류가 아니다.
+  if deleted_id is null then
+    return null;
+  end if;
+
+  -- 이 후기에 달린 열린 신고를 한 번에 마감한다. 하나를 지우면 나머지 신고도 답을 받은 것이다.
+  update public.review_reports rr
+     set status = 'accepted',
+         resolved_at = now(),
+         resolved_by = actor,
+         resolution_note = nullif(trim(note), '')
+   where rr.review_id = deleted_id
+     and rr.status = 'open';
+
+  perform public.log_admin_action('review_deleted', 'review', deleted_id, note);
+
+  return deleted_id;
+end;
+$$;
+
+comment on function public.admin_delete_review(uuid, text) is '후기를 지운 표시를 하고 그 후기의 열린 신고를 함께 마감한다.';
+
+create or replace function public.admin_restore_review(target_review uuid, note text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  restored_id uuid;
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.reviews r
+     set deleted_at = null,
+         deleted_by = null,
+         deleted_reason = null
+   where r.id = target_review
+     and r.deleted_at is not null
+  returning r.id into restored_id;
+
+  if restored_id is null then
+    return null;
+  end if;
+
+  -- 지우면서 마감했던 신고를 기각으로 돌린다. 후기가 돌아왔다면 그 신고는 받아들여진 것이
+  -- 아니게 되고, accepted 로 남겨 두면 "지웠다"고 읽힌다.
+  update public.review_reports rr
+     set status = 'dismissed',
+         resolved_at = now(),
+         resolved_by = actor,
+         resolution_note = nullif(trim(note), '')
+   where rr.review_id = restored_id
+     and rr.status = 'accepted';
+
+  perform public.log_admin_action('review_restored', 'review', restored_id, note);
+
+  return restored_id;
+end;
+$$;
+
+comment on function public.admin_restore_review(uuid, text) is '잘못 지운 후기를 되돌리고, 그때 마감했던 신고를 기각으로 돌린다.';
+
+revoke all on function public.admin_delete_review(uuid, text) from public, anon;
+grant execute on function public.admin_delete_review(uuid, text) to authenticated;
+
+revoke all on function public.admin_restore_review(uuid, text) from public, anon;
+grant execute on function public.admin_restore_review(uuid, text) to authenticated;
+
+-- 60) 신고 기각 ----------------------------------------------------------------
+--
+-- 후기에는 아무 일도 일어나지 않는다. 신고한 사람만 자기 신고가 어떻게 되었는지 보게 된다
+-- ("본인 신고 조회" 정책). 신고당한 사실 자체는 작성자에게 알리지 않는다 —
+-- 기각된 신고까지 알리면 신고가 곧 시비가 된다.
+
+create or replace function public.admin_dismiss_report(target_report uuid, note text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  dismissed_id uuid;
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.review_reports rr
+     set status = 'dismissed',
+         resolved_at = now(),
+         resolved_by = actor,
+         resolution_note = nullif(trim(note), '')
+   where rr.id = target_report
+     and rr.status = 'open'
+  returning rr.id into dismissed_id;
+
+  if dismissed_id is null then
+    return null;
+  end if;
+
+  perform public.log_admin_action('report_dismissed', 'review_report', dismissed_id, note);
+
+  return dismissed_id;
+end;
+$$;
+
+comment on function public.admin_dismiss_report(uuid, text) is '신고를 기각한다. 후기는 그대로 남는다.';
+
+revoke all on function public.admin_dismiss_report(uuid, text) from public, anon;
+grant execute on function public.admin_dismiss_report(uuid, text) to authenticated;
+
+-- 61) 관리자가 손대야 하는 매칭 ------------------------------------------------
+--
+-- 두 가지만 내보낸다. 관리자가 매칭을 통째로 훑을 일은 없고, 훑을 수 있게 두면
+-- 남의 간병 내용을 아무 때나 읽는 창구가 된다.
+--
+--   no_show  — 오지 않았다고 신고된 매칭. 신고가 잘못되었을 수 있어 되돌릴 자리가 필요하다.
+--   overdue  — 끝날 날이 지났는데 아직 살아 있는 매칭. Phase 10 이 자동 판정을 두지 않기로
+--              하면서 남겨 둔 자리다. 둘 중 누구도 상태를 옮기지 않으면 여기 쌓인다.
+--
+-- 날짜 비교는 report_no_show() 와 같이 한국 시간 기준이다.
+
+create or replace function public.admin_disputed_matches()
+returns table (
+  kind text,
+  match_id uuid,
+  request_id uuid,
+  status text,
+  region text,
+  start_date date,
+  end_date date,
+  accepted_at timestamptz,
+  started_at timestamptz,
+  no_show_at timestamptz,
+  no_show_note text,
+  guardian_id uuid,
+  guardian_name text,
+  caregiver_id uuid,
+  caregiver_name text
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  return query
+  select
+    case when m.status = 'no_show' then 'no_show' else 'overdue' end,
+    m.id,
+    m.request_id,
+    m.status,
+    r.region,
+    r.start_date,
+    r.end_date,
+    m.accepted_at,
+    m.started_at,
+    m.no_show_at,
+    m.no_show_note,
+    m.guardian_id,
+    gu.name,
+    m.caregiver_id,
+    cg.name
+  from public.matches m
+  join public.care_requests r on r.id = m.request_id
+  join public.profiles gu on gu.id = m.guardian_id
+  join public.profiles cg on cg.id = m.caregiver_id
+  where m.status = 'no_show'
+     or (
+       m.status in ('accepted', 'in_progress')
+       and r.end_date < (now() at time zone 'Asia/Seoul')::date
+     )
+  -- 급한 것이 위로: 노쇼는 신고된 순, 방치된 매칭은 오래 지난 순
+  order by coalesce(m.no_show_at, r.end_date::timestamptz) desc
+  limit 100;
+end;
+$$;
+
+comment on function public.admin_disputed_matches() is '관리자가 손대야 하는 매칭 — 노쇼로 신고된 건과 끝날 날이 지났는데 살아 있는 건.';
+
+revoke all on function public.admin_disputed_matches() from public, anon;
+grant execute on function public.admin_disputed_matches() to authenticated;
+
+-- 62) 노쇼 되돌리기 ------------------------------------------------------------
+--
+-- 매칭을 accepted 로 되돌리지 않는다. report_no_show() 가 신고와 동시에 요청을 다시
+-- 대기중으로 열어 두었고, 그 사이 다른 간병인이 이미 수락했을 수 있다 —
+-- 되돌리면 matches_live_per_request_idx 에 걸려 요청당 살아 있는 매칭이 둘이 된다.
+--
+-- 대신 취소로 옮긴다. 취소한 사람 자리에 관리자가 들어가고(53 에서 그 자리를 열어 두었다),
+-- 노쇼였다는 표시는 지워진다. 그래서 이 조치는 반드시 admin_actions 에 남아야 한다 —
+-- 매칭 행만 보면 관리자가 취소한 건과 구분되지 않는다.
+--
+-- 요청(care_requests)은 건드리지 않는다. 신고 시점에 이미 정리되었고, 그 뒤에 일어난
+-- 일을 여기서 되짚으면 지금 진행 중인 다른 매칭을 망가뜨린다.
+--
+-- 노쇼 표시가 지워지면 accept_care_request() 와 recommendation_candidates() 가 보는
+-- matches_no_show_idx 에서도 빠지므로, 그 간병인은 같은 요청을 다시 가져갈 수 있게 된다.
+-- 신고가 잘못된 것이었다면 그게 맞다.
+
+create or replace function public.admin_clear_no_show(target_match uuid, note text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  cleared_id uuid;
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.matches m
+     set status = 'cancelled',
+         cancelled_at = now(),
+         cancelled_by = actor,
+         cancel_reason = nullif(trim(note), ''),
+         no_show_at = null,
+         no_show_reported_by = null,
+         no_show_note = null
+   where m.id = target_match
+     and m.status = 'no_show'
+  returning m.id into cleared_id;
+
+  if cleared_id is null then
+    return null;
+  end if;
+
+  perform public.log_admin_action('no_show_cleared', 'match', cleared_id, note);
+
+  return cleared_id;
+end;
+$$;
+
+comment on function public.admin_clear_no_show(uuid, text) is '잘못된 노쇼 신고를 되돌린다. 매칭은 취소로 남고 요청은 건드리지 않는다.';
+
+revoke all on function public.admin_clear_no_show(uuid, text) from public, anon;
+grant execute on function public.admin_clear_no_show(uuid, text) to authenticated;
+
+-- 63) 매칭 강제 취소 -----------------------------------------------------------
+--
+-- 살아 있는 매칭을 관리자가 끊는다. 요청을 어떻게 할지는 cancel_match() 와 같은 규칙을
+-- 따른다 — 시작 전이면 요청을 다시 대기중으로 열어 다른 간병인을 받을 수 있게 하고,
+-- 시작한 뒤면 요청을 닫는다. 이미 간 사람이 있는 간병을 없던 일로 되돌릴 수는 없다.
+--
+-- 규칙을 cancel_match() 와 나눠 갖지 않고 그대로 옮겨 적은 이유는, 그쪽은 당사자만
+-- 부를 수 있게 actor 조건이 박혀 있어서다. 두 함수가 갈라지지 않도록 한쪽을 고치면
+-- 다른 쪽도 함께 본다.
+
+create or replace function public.admin_cancel_match(target_match uuid, reason text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  cancelled public.matches%rowtype;
+  was_started boolean;
+begin
+  if not public.is_admin() then
+    raise exception '관리자만 할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  update public.matches m
+     set status = 'cancelled',
+         cancelled_at = now(),
+         cancelled_by = actor,
+         cancel_reason = nullif(trim(reason), '')
+   where m.id = target_match
+     and m.status in ('accepted', 'in_progress')
+  returning * into cancelled;
+
+  if cancelled.id is null then
+    return null;
+  end if;
+
+  was_started := cancelled.started_at is not null;
+
+  update public.care_requests r
+     set status = case when was_started then 'cancelled' else 'pending' end,
+         matched_caregiver_id = case when was_started then r.matched_caregiver_id else null end,
+         matched_at = case when was_started then r.matched_at else null end
+   where r.id = cancelled.request_id;
+
+  perform public.log_admin_action('match_cancelled', 'match', cancelled.id, reason);
+
+  return cancelled.id;
+end;
+$$;
+
+comment on function public.admin_cancel_match(uuid, text) is '관리자가 살아 있는 매칭을 끊는다. 요청 처리는 cancel_match() 와 같은 규칙이다.';
+
+revoke all on function public.admin_cancel_match(uuid, text) from public, anon;
+grant execute on function public.admin_cancel_match(uuid, text) to authenticated;
