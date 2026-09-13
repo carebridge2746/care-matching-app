@@ -3,6 +3,7 @@ import type {
   AdminAction,
   CareRequest,
   CaregiverProfile,
+  LocationSharing,
   Match,
   Patient,
   QuizAttempt,
@@ -32,6 +33,7 @@ const ReviewReportsKey = 'careapp.mock.review-reports';
 const AdminActionsKey = 'careapp.mock.admin-actions';
 const QuizAttemptsKey = 'careapp.mock.quiz-attempts';
 const TrainingCompletionsKey = 'careapp.mock.training-completions';
+const LocationSharingsKey = 'careapp.mock.location-sharings';
 
 /** 어댑터가 흉내 내는 네트워크 지연. 화면의 로딩 표시까지 확인하기 위한 값이다. */
 export const NetworkDelayMs = 300;
@@ -145,6 +147,20 @@ export async function saveTrainingCompletions(
   completions: StoredTrainingCompletion[]
 ): Promise<void> {
   await writeJson(TrainingCompletionsKey, completions);
+}
+
+/**
+ * 안심 도착 기록 (Phase 13). 매칭 한 건에 한 줄.
+ *
+ * 저장된 값은 간병인이 마지막으로 바꾼 상태 그대로다. 간병이 끝나 자동으로 닫힌 것이나
+ * 오래되어 확인할 수 없게 된 것은 저장하지 않고 읽을 때 판정한다 (src/lib/arrival.ts).
+ */
+export async function loadLocationSharings(): Promise<LocationSharing[]> {
+  return (await readJson<LocationSharing[]>(LocationSharingsKey)) ?? [];
+}
+
+export async function saveLocationSharings(records: LocationSharing[]): Promise<void> {
+  await writeJson(LocationSharingsKey, records);
 }
 
 export async function loadCaregiverProfiles(): Promise<CaregiverProfile[]> {

@@ -911,6 +911,115 @@ export const AdminActionLabels: Record<AdminActionType, string> = {
 
 export type AdminActionTargetType = 'review' | 'reviewReport' | 'match';
 
+// --- 안심 도착 (Phase 13) --------------------------------------------------------
+
+/**
+ * 간병인의 이동·도착 공유 상태.
+ *
+ * 실제 위치(GPS 좌표)는 다루지 않는다. 보호자에게 필요한 것은 "지금 어디쯤인가"가 아니라
+ * "제시간에 오고 있는가"이고, 좌표를 들고 있으면 간병 시간 밖까지 추적할 수 있는 자리가 생긴다.
+ *
+ * 앱 표기는 다른 상태 값처럼 camelCase 다. 저장소를 붙이게 되면 snake_case(not_started …)로 옮긴다.
+ *   notStarted  아직 이동을 시작하지 않음
+ *   sharing     이동 중 (공유 중)
+ *   nearby      약속 장소 인근
+ *   arrived     도착 완료
+ *   paused      간병인이 공유를 잠시 멈춤
+ *   unavailable 공유 중인데 마지막 업데이트가 오래되어 확인할 수 없음 (저장하지 않고 읽을 때 판정)
+ *   ended       공유 종료 — 간병인이 끝냈거나, 간병이 시작·종료·취소되어 자동으로 끝남
+ */
+export type LocationSharingStatus =
+  | 'notStarted'
+  | 'sharing'
+  | 'nearby'
+  | 'arrived'
+  | 'paused'
+  | 'unavailable'
+  | 'ended';
+
+/** 보호자·관리자 화면에 보이는 이름. 위치가 아니라 상태를 말한다. */
+export const LocationSharingStatusLabels: Record<LocationSharingStatus, string> = {
+  notStarted: '이동 전',
+  sharing: '이동 중',
+  nearby: '약속 장소 인근',
+  arrived: '도착 완료',
+  paused: '위치 공유 일시 중지',
+  unavailable: '위치 확인 불가',
+  ended: '위치 공유 종료',
+};
+
+/** 공유가 끝난 이유. 간병인이 끝낸 것과 간병이 끝나 자동으로 닫힌 것을 보호자에게 달리 알린다. */
+export type LocationSharingEndReason =
+  | 'caregiverStopped'
+  | 'careStarted'
+  | 'careCompleted'
+  | 'cancelled'
+  | 'noShow';
+
+/**
+ * 매칭 한 건의 안심 도착 기록.
+ *
+ * 매칭과 따로 둔다. 매칭은 "간병이 성사되었는가"의 기록이고, 이것은 간병 당일 몇 시간만
+ * 쓰이는 일시적인 상태라 매칭 행에 섞으면 매칭을 읽는 모든 화면이 함께 무거워진다.
+ */
+export type LocationSharing = {
+  matchId: string;
+  status: LocationSharingStatus;
+  /** 간병인이 안내를 읽고 동의했는지. 동의하지 않으면 이동을 시작할 수 없다. */
+  consentGiven: boolean;
+  consentAt?: string;
+  /** 처음 이동을 시작한 시각 */
+  startedAt?: string;
+  /** 예상 도착 시각(ISO). Mock 에서는 상태에 따라 정해진 분을 더해 만든다. */
+  estimatedArrivalAt?: string;
+  /** 간병인이 마지막으로 상태를 바꾼 시각. 오래되면 '위치 확인 불가'로 본다. */
+  lastUpdatedAt?: string;
+  arrivedAt?: string;
+  /** 일시 중지하거나 종료한 시각 */
+  stoppedAt?: string;
+  endedReason?: LocationSharingEndReason;
+  /** 0~100. 실제 거리 대신 쓰는 개발용 진행도다. */
+  mockProgress: number;
+};
+
+/**
+ * 도착 판단 — 노쇼를 정하지 않고 "확인이 필요한가"까지만 말한다.
+ *
+ * 위치 정보만으로 노쇼를 확정하지 않는다. 배터리가 꺼졌을 수도, 공유를 잊었을 수도 있다.
+ * 노쇼 신고는 지금처럼 보호자가 직접 하고, 이 값은 그 판단을 돕는 안내일 뿐이다.
+ */
+export type ArrivalAssessment =
+  | 'onTime'
+  | 'preparing'
+  | 'moving'
+  | 'delayed'
+  | 'needsConfirmation'
+  | 'arrived'
+  | 'cancelled';
+
+export const ArrivalAssessmentLabels: Record<ArrivalAssessment, string> = {
+  onTime: '일정 전',
+  preparing: '출발 준비',
+  moving: '이동 중',
+  delayed: '도착 지연 가능성 있음',
+  needsConfirmation: '확인 필요',
+  arrived: '도착 완료',
+  cancelled: '취소됨',
+};
+
+/** 관리자 화면의 도착 확인 한 줄. 환자 정보와 연락처는 담지 않는다. */
+export type ArrivalWatchItem = {
+  matchId: string;
+  requestId: string;
+  region: string;
+  startDate: string;
+  dailyStartTime?: string;
+  guardianName: string;
+  caregiverName: string;
+  sharing: LocationSharing;
+  assessment: ArrivalAssessment;
+};
+
 /**
  * 관리자가 한 일 한 줄.
  *

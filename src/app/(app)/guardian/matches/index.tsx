@@ -1,11 +1,13 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { GuardianArrivalStatus } from '@/components/arrival';
 import { MatchCancelForm, MatchCard, NoShowForm, ReviewForm } from '@/components/care';
 import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
 import { overdueMatches } from '@/lib/no-show';
 import { useAuthStore } from '@/store/use-auth-store';
+import { useLocationSharingStore } from '@/store/use-location-sharing-store';
 import { liveMatches, pastMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { hasReviewed, isReviewDeleted, useReviewsStore } from '@/store/use-reviews-store';
 import { Spacing } from '@/theme';
@@ -43,6 +45,9 @@ export default function GuardianMatchesScreen() {
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const guardianId = user?.id;
 
+  const sharings = useLocationSharingStore((state) => state.byMatchId);
+  const loadSharings = useLocationSharingStore((state) => state.load);
+
   // 간병인이 간병을 시작하거나 끝냈을 수 있으므로 화면에 돌아올 때마다 다시 불러온다
   useFocusEffect(
     useCallback(() => {
@@ -52,6 +57,18 @@ export default function GuardianMatchesScreen() {
       }
     }, [guardianId, load, loadReviews])
   );
+
+  // 안심 도착은 간병인이 바꾸는 상태라, 매칭 목록을 새로 받을 때마다 함께 다시 읽는다.
+  // TODO(실시간): 실제 연결에서는 구독이나 주기적 새로고침으로 바꾼다. Mock 에서는 화면에 돌아올 때 읽는다.
+  const liveMatchKey = matches
+    .filter((match) => match.status === 'accepted' || match.status === 'inProgress')
+    .map((match) => `${match.id}:${match.status}:${match.updatedAt}`)
+    .join(',');
+  useEffect(() => {
+    if (liveMatchKey) {
+      void loadSharings(liveMatchKey.split(',').map((entry) => entry.split(':')[0] ?? ''));
+    }
+  }, [liveMatchKey, loadSharings]);
 
   if (isLoading && matches.length === 0) {
     return <LoadingView message="간병 진행 상황을 불러오는 중입니다" />;
@@ -134,20 +151,22 @@ export default function GuardianMatchesScreen() {
                 }}
               />
             ) : (
-              <MatchCard
-                key={match.id}
-                match={match}
-                viewer="guardian"
-                busy={updatingId === match.id}
-                onPress={() => router.push(`/guardian/requests/${match.requestId}`)}
-                onComplete={() => {
-                  if (guardianId) {
-                    void complete(match.id, guardianId);
-                  }
-                }}
-                onCancel={() => setCancellingId(match.id)}
-                onReportNoShow={() => setReportingId(match.id)}
-              />
+              <View key={match.id} style={styles.matchGroup}>
+                <MatchCard
+                  match={match}
+                  viewer="guardian"
+                  busy={updatingId === match.id}
+                  onPress={() => router.push(`/guardian/requests/${match.requestId}`)}
+                  onComplete={() => {
+                    if (guardianId) {
+                      void complete(match.id, guardianId);
+                    }
+                  }}
+                  onCancel={() => setCancellingId(match.id)}
+                  onReportNoShow={() => setReportingId(match.id)}
+                />
+                <GuardianArrivalStatus match={match} sharing={sharings[match.id]} />
+              </View>
             )
           )}
         </View>
@@ -199,6 +218,9 @@ export default function GuardianMatchesScreen() {
 }
 
 const styles = StyleSheet.create({
+  matchGroup: {
+    gap: Spacing.sm,
+  },
   section: {
     gap: Spacing.md,
     paddingTop: Spacing.md,

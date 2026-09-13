@@ -69,6 +69,12 @@ export function formatPeriod(startDate: string, endDate?: string): string {
   return endDate ? `${start} ~ ${formatKoreanDate(endDate)}` : `${start} ~ 종료일 미정`;
 }
 
+/** ISO 시각 → 기기 현지 시각 'HH:MM'. 형식이 잘못됐으면 받은 값을 그대로 돌려준다. */
+export function formatClockTime(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  return Number.isNaN(date.getTime()) ? isoTimestamp : `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /**
  * ISO 시각(2026-09-01T04:12:00Z) → '2026년 9월 1일 (화)'.
  * 저장은 시각까지 하지만 화면에는 날짜만 보여 주므로, 기기의 현지 날짜로 바꿔서 읽는다.

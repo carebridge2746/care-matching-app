@@ -88,6 +88,18 @@ export async function acceptRequest(
   return findMatch(requestId, caregiverId);
 }
 
+/**
+ * 안심 도착을 쓸 수 있는 수락된 간병 한 건 (Phase 13).
+ * 시작일을 어제로 두어 공유 시간대 안에 들고, 시작 시각이 지난 상태를 만든다.
+ */
+export async function seedAcceptedMatchForArrival(
+  input: Partial<CareRequestInput> = {},
+  caregiverId: string = Caregiver
+): Promise<CareMatch> {
+  const request = await seedRequest({ startDate: daysFromToday(-1), ...input });
+  return acceptRequest(request.id, caregiverId);
+}
+
 /** 끝난 간병 한 건. 후기는 끝난 간병에만 남길 수 있다. */
 export async function seedCompletedMatch(caregiverId: string = Caregiver): Promise<CareMatch> {
   const request = await seedRequest({

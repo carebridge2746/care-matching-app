@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { AppButton, AppText, Card, Screen } from '@/components/common';
 import { useAdminStore } from '@/store/use-admin-store';
 import { useAuthStore } from '@/store/use-auth-store';
+import { useLocationSharingStore } from '@/store/use-location-sharing-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -31,12 +32,16 @@ export default function AdminHomeScreen() {
   const loadReports = useAdminStore((state) => state.loadReports);
   const loadDisputedMatches = useAdminStore((state) => state.loadDisputedMatches);
 
+  const watch = useLocationSharingStore((state) => state.watch);
+  const loadWatch = useLocationSharingStore((state) => state.loadWatch);
+
   // 다른 관리자가 처리했거나 새 신고가 들어왔을 수 있으므로 돌아올 때마다 다시 센다
   useFocusEffect(
     useCallback(() => {
       void loadReports('open');
       void loadDisputedMatches();
-    }, [loadDisputedMatches, loadReports])
+      void loadWatch();
+    }, [loadDisputedMatches, loadReports, loadWatch])
   );
 
   if (!user) {
@@ -47,6 +52,8 @@ export default function AdminHomeScreen() {
   const openCount = reportStatus === 'open' && !isLoadingReports ? reports.length : null;
   const noShowCount = disputedMatches.filter((match) => match.kind === 'noShow').length;
   const overdueCount = disputedMatches.length - noShowCount;
+  const needsConfirmationCount = watch.filter((item) => item.assessment === 'needsConfirmation').length;
+  const delayedCount = watch.filter((item) => item.assessment === 'delayed').length;
 
   return (
     <Screen
@@ -95,6 +102,16 @@ export default function AdminHomeScreen() {
             : disputedMatches.length > 0
               ? `노쇼 신고 ${noShowCount}건 · 종료일 지남 ${overdueCount}건`
               : '확인이 필요한 매칭이 없습니다'}
+        </AppText>
+      </Card>
+
+      {/* 안심 도착 (Phase 13) — 도착 확인은 확인이 필요한 매칭 화면 맨 위에 모아 둔다 */}
+      <Card onPress={() => router.push('/admin/matches')}>
+        <AppText variant="subheading">도착 확인</AppText>
+        <AppText variant="body" tone={needsConfirmationCount > 0 ? 'danger' : 'secondary'}>
+          {watch.length > 0
+            ? `확인 필요 ${needsConfirmationCount}건 · 지연 가능성 ${delayedCount}건 · 전체 ${watch.length}건`
+            : '지금 도착을 기다리는 간병이 없습니다'}
         </AppText>
       </Card>
 

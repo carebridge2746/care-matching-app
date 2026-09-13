@@ -1,10 +1,16 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+
+import { Spacing } from '@/theme';
 
 import { AdminNoteForm, DisputedMatchCard } from '@/components/admin';
+import { ArrivalWatchCard } from '@/components/arrival';
 import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
+import { SharingWindowHours } from '@/lib/arrival';
 import { useAdminStore } from '@/store/use-admin-store';
 import { useAuthStore } from '@/store/use-auth-store';
+import { useLocationSharingStore } from '@/store/use-location-sharing-store';
 import type { DisputedMatch } from '@/types';
 
 /**
@@ -23,13 +29,18 @@ export default function AdminMatchesScreen() {
   const clearNoShow = useAdminStore((state) => state.clearNoShow);
   const cancelMatch = useAdminStore((state) => state.cancelMatch);
 
+  const watch = useLocationSharingStore((state) => state.watch);
+  const watchError = useLocationSharingStore((state) => state.errorMessage);
+  const loadWatch = useLocationSharingStore((state) => state.loadWatch);
+
   /** 확인 폼을 펼쳐 둔 매칭. 한 번에 하나만 연다. */
   const [openMatchId, setOpenMatchId] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       void load();
-    }, [load])
+      void loadWatch();
+    }, [load, loadWatch])
   );
 
   if (isLoading && matches.length === 0) {
@@ -53,11 +64,32 @@ export default function AdminMatchesScreen() {
 
   return (
     <Screen scroll avoidKeyboard edges={['bottom']}>
-      {errorMessage ? (
+      {errorMessage || watchError ? (
         <AppText variant="body" tone="danger">
-          {errorMessage}
+          {errorMessage ?? watchError}
         </AppText>
       ) : null}
+
+      {/*
+        안심 도착 (Phase 13). 볼 수만 있다 — '확인 필요'는 안내이고, 노쇼·제재를 여기서 정하지 않는다.
+        먼 날의 일정까지 훑지 않도록 공유 시간대에 들어온 간병만 나온다.
+      */}
+      <View style={styles.section}>
+        <AppText variant="heading">도착 확인</AppText>
+        <AppText variant="caption" tone="secondary">
+          시작 {SharingWindowHours}시간 전부터 아직 시작하지 않은 간병의 이동·도착 상태입니다. 위치
+          정보만으로 노쇼로 처리하지 않습니다.
+        </AppText>
+        {watch.length === 0 ? (
+          <AppText variant="body" tone="tertiary">
+            지금 도착을 기다리는 간병이 없습니다.
+          </AppText>
+        ) : (
+          watch.map((item) => <ArrivalWatchCard key={item.matchId} item={item} />)
+        )}
+      </View>
+
+      <AppText variant="heading">노쇼·종료일 확인</AppText>
 
       {matches.length === 0 ? (
         <EmptyState
@@ -88,6 +120,12 @@ export default function AdminMatchesScreen() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  section: {
+    gap: Spacing.md,
+  },
+});
 
 type MatchActionFormProps = {
   match: DisputedMatch;

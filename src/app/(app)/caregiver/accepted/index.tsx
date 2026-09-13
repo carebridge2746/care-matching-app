@@ -1,10 +1,12 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { CaregiverArrivalPanel } from '@/components/arrival';
 import { MatchCancelForm, MatchCard, ReviewForm } from '@/components/care';
 import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
 import { useAuthStore } from '@/store/use-auth-store';
+import { useLocationSharingStore } from '@/store/use-location-sharing-store';
 import {
   liveMatches,
   pastMatches,
@@ -45,6 +47,12 @@ export default function AcceptedCareScreen() {
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const caregiverId = user?.id;
 
+  const sharings = useLocationSharingStore((state) => state.byMatchId);
+  const sharingProcessingId = useLocationSharingStore((state) => state.processingId);
+  const sharingError = useLocationSharingStore((state) => state.errorMessage);
+  const loadSharings = useLocationSharingStore((state) => state.load);
+  const runSharing = useLocationSharingStore((state) => state.run);
+
   // 보호자가 요청을 거두거나 간병을 종료했을 수 있으므로 화면에 돌아올 때마다 다시 불러온다
   useFocusEffect(
     useCallback(() => {
@@ -55,6 +63,18 @@ export default function AcceptedCareScreen() {
     }, [caregiverId, load, loadReviews])
   );
 
+  // 안심 도착은 아직 시작하지 않은 간병에만 쓴다. 매칭 상태가 바뀌면(시작·취소) 다시 읽어서
+  // 자동으로 끝난 공유가 화면에 남지 않게 한다.
+  const liveMatchKey = matches
+    .filter((match) => match.status === 'accepted' || match.status === 'inProgress')
+    .map((match) => `${match.id}:${match.status}`)
+    .join(',');
+  useEffect(() => {
+    if (liveMatchKey) {
+      void loadSharings(liveMatchKey.split(',').map((entry) => entry.split(':')[0] ?? ''));
+    }
+  }, [liveMatchKey, loadSharings]);
+
   if (isLoading && matches.length === 0) {
     return <LoadingView message="수락한 간병을 불러오는 중입니다" />;
   }
@@ -64,9 +84,9 @@ export default function AcceptedCareScreen() {
 
   return (
     <Screen scroll edges={['bottom']}>
-      {errorMessage || reviewError ? (
+      {errorMessage || reviewError || sharingError ? (
         <AppText variant="body" tone="danger">
-          {errorMessage ?? reviewError}
+          {errorMessage ?? reviewError ?? sharingError}
         </AppText>
       ) : null}
 
@@ -102,24 +122,35 @@ export default function AcceptedCareScreen() {
                 }}
               />
             ) : (
-              <MatchCard
-                key={match.id}
-                match={match}
-                viewer="caregiver"
-                busy={updatingId === match.id}
-                onPress={() => router.push(`/caregiver/requests/${match.requestId}`)}
-                onStart={() => {
-                  if (caregiverId) {
-                    void start(match.id, caregiverId);
-                  }
-                }}
-                onComplete={() => {
-                  if (caregiverId) {
-                    void complete(match.id, caregiverId);
-                  }
-                }}
-                onCancel={() => setCancellingId(match.id)}
-              />
+              <View key={match.id} style={styles.matchGroup}>
+                <MatchCard
+                  match={match}
+                  viewer="caregiver"
+                  busy={updatingId === match.id}
+                  onPress={() => router.push(`/caregiver/requests/${match.requestId}`)}
+                  onStart={() => {
+                    if (caregiverId) {
+                      void start(match.id, caregiverId);
+                    }
+                  }}
+                  onComplete={() => {
+                    if (caregiverId) {
+                      void complete(match.id, caregiverId);
+                    }
+                  }}
+                  onCancel={() => setCancellingId(match.id)}
+                />
+                <CaregiverArrivalPanel
+                  match={match}
+                  sharing={sharings[match.id]}
+                  busy={sharingProcessingId === match.id}
+                  onAction={(action) => {
+                    if (caregiverId) {
+                      void runSharing(action, match.id, caregiverId);
+                    }
+                  }}
+                />
+              </View>
             )
           )}
         </View>
@@ -170,6 +201,9 @@ export default function AcceptedCareScreen() {
 }
 
 const styles = StyleSheet.create({
+  matchGroup: {
+    gap: Spacing.sm,
+  },
   section: {
     gap: Spacing.md,
     paddingTop: Spacing.md,
