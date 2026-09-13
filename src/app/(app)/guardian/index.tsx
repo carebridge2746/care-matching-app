@@ -8,8 +8,9 @@ import { useAuthStore } from '@/store/use-auth-store';
 import { useCareRequestsStore } from '@/store/use-care-requests-store';
 import { liveMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
 import { usePatientsStore } from '@/store/use-patients-store';
+import { useReviewsStore } from '@/store/use-reviews-store';
 import { Spacing } from '@/theme';
-import { CareTypeLabels } from '@/types';
+import { CareTypeLabels, formatRating } from '@/types';
 
 /**
  * 보호자 홈.
@@ -28,6 +29,8 @@ export default function GuardianHomeScreen() {
   const loadRequests = useCareRequestsStore((state) => state.load);
   const matches = useMatchHistoryStore((state) => state.matches);
   const loadMatches = useMatchHistoryStore((state) => state.load);
+  const rating = useReviewsStore((state) => state.rating);
+  const loadReviews = useReviewsStore((state) => state.load);
 
   const guardianId = user?.id;
 
@@ -41,7 +44,8 @@ export default function GuardianHomeScreen() {
       void loadPatients(guardianId);
       void loadRequests(guardianId);
       void loadMatches(guardianId, 'guardian');
-    }, [guardianId, loadMatches, loadPatients, loadRequests])
+      void loadReviews(guardianId);
+    }, [guardianId, loadMatches, loadPatients, loadRequests, loadReviews])
   );
 
   if (!user) {
@@ -109,6 +113,14 @@ export default function GuardianHomeScreen() {
             : matches.length > 0
               ? `지난 간병 ${matches.length}건`
               : '아직 매칭된 간병이 없습니다'}
+        </AppText>
+      </Card>
+
+      {/* 간병인이 남긴 후기는 다른 간병인이 요청을 고를 때 본다. 어떻게 보이는지 확인하는 자리다. */}
+      <Card onPress={() => router.push('/guardian/reviews')}>
+        <AppText variant="subheading">받은 평가</AppText>
+        <AppText variant="body" tone="secondary">
+          {formatRating(rating)}
         </AppText>
       </Card>
 
