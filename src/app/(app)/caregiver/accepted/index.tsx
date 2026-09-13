@@ -10,7 +10,7 @@ import {
   pastMatches,
   useMatchHistoryStore,
 } from '@/store/use-match-history-store';
-import { hasReviewed, useReviewsStore } from '@/store/use-reviews-store';
+import { hasReviewed, isReviewDeleted, useReviewsStore } from '@/store/use-reviews-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -158,6 +158,7 @@ export default function AcceptedCareScreen() {
                 match={match}
                 viewer="caregiver"
                 reviewed={hasReviewed(written, match.id)}
+                reviewDeleted={isReviewDeleted(written, match.id)}
                 onReview={() => setReviewingId(match.id)}
               />
             )

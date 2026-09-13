@@ -38,6 +38,11 @@ export type MatchCardProps = {
   onReview?: () => void;
   /** 이 간병에 이미 후기를 남겼는지. 남겼으면 버튼 대신 그 사실을 보여 준다. */
   reviewed?: boolean;
+  /**
+   * 남긴 후기를 관리자가 지웠는지.
+   * 지워진 후기도 다시 쓸 수는 없으므로, 버튼이 없는 이유를 함께 알려 준다.
+   */
+  reviewDeleted?: boolean;
   /** 값을 주면 카드 전체를 눌러 상세로 갈 수 있다 */
   onPress?: () => void;
 };
@@ -61,6 +66,7 @@ export function MatchCard({
   onReportNoShow,
   onReview,
   reviewed = false,
+  reviewDeleted = false,
   onPress,
 }: MatchCardProps) {
   const { patient, care } = match;
@@ -187,7 +193,11 @@ export function MatchCard({
 
       {/* 후기는 끝난 간병에만 남길 수 있다. 취소된 간병에는 평가할 간병이 없었다. */}
       {match.status === 'completed' ? (
-        reviewed ? (
+        reviewed && reviewDeleted ? (
+          <AppText variant="caption" tone="secondary">
+            남기신 후기는 신고 확인을 거쳐 삭제되었습니다. 이 간병에는 후기를 다시 남길 수 없습니다.
+          </AppText>
+        ) : reviewed ? (
           <AppText variant="caption" tone="success">
             후기를 남기셨습니다
           </AppText>

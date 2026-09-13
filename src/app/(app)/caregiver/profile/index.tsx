@@ -103,11 +103,17 @@ type ProfileFormProps = {
  * 프로필 화면에 두는 이유는 보호자가 보는 것과 같은 값이기 때문이다 —
  * 내가 어떻게 보이는지를 프로필과 같은 자리에서 확인할 수 있어야 한다.
  * 작성자 이름은 본인에게도 성만 보인다.
+ *
+ * 부적절한 후기는 여기서 신고한다. 후기를 직접 지울 수 없게 둔 대신 열어 둔 창구다.
  */
 function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
   const rating = useReviewsStore((state) => state.rating);
   const received = useReviewsStore((state) => state.received);
+  const reports = useReviewsStore((state) => state.reports);
+  const reportingReviewId = useReviewsStore((state) => state.reportingReviewId);
+  const errorMessage = useReviewsStore((state) => state.errorMessage);
   const load = useReviewsStore((state) => state.load);
+  const report = useReviewsStore((state) => state.report);
 
   useEffect(() => {
     void load(caregiverId);
@@ -119,8 +125,16 @@ function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
       <ReviewList
         rating={rating}
         reviews={received}
+        reports={reports}
+        reportingReviewId={reportingReviewId}
+        onReport={(reviewId, input) => report(reviewId, caregiverId, input)}
         emptyMessage="간병을 마치면 보호자가 남긴 후기가 여기에 쌓입니다."
       />
+      {errorMessage ? (
+        <AppText variant="body" tone="danger">
+          {errorMessage}
+        </AppText>
+      ) : null}
     </View>
   );
 }

@@ -7,7 +7,7 @@ import { AppText, EmptyState, LoadingView, Screen } from '@/components/common';
 import { overdueMatches } from '@/lib/no-show';
 import { useAuthStore } from '@/store/use-auth-store';
 import { liveMatches, pastMatches, useMatchHistoryStore } from '@/store/use-match-history-store';
-import { hasReviewed, useReviewsStore } from '@/store/use-reviews-store';
+import { hasReviewed, isReviewDeleted, useReviewsStore } from '@/store/use-reviews-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -187,6 +187,7 @@ export default function GuardianMatchesScreen() {
                 match={match}
                 viewer="guardian"
                 reviewed={hasReviewed(written, match.id)}
+                reviewDeleted={isReviewDeleted(written, match.id)}
                 onReview={() => setReviewingId(match.id)}
               />
             )

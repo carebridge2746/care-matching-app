@@ -10,3 +10,4 @@ export { MatchScoreBadge, type MatchScoreBadgeProps } from './match-score-badge'
 export { NoShowForm, type NoShowFormProps } from './no-show-form';
 export { ReviewForm, type ReviewFormProps } from './review-form';
 export { ReviewList, type ReviewListProps } from './review-list';
+export { ReviewReportForm, type ReviewReportFormProps } from './review-report-form';
