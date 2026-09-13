@@ -1,6 +1,6 @@
 import { addDays, formatKoreanDate, formatPeriod, isValidIsoDate } from '@/lib/date';
 import { canReportNoShow, isMatchOverdue, noShowCountForRequest, overdueMatches } from '@/lib/no-show';
-import { maskPersonName } from '@/lib/privacy';
+import { ContactRetentionDays, isContactOpen, maskPersonName } from '@/lib/privacy';
 import { homeRouteForRole } from '@/lib/routes';
 import type { CareMatch, MatchStatus } from '@/types';
 
@@ -31,6 +31,23 @@ describe('개인정보 가리기', () => {
     ['김', '김'],
   ])('%j → %s', (name, expected) => {
     expect(maskPersonName(name)).toBe(expected);
+  });
+});
+
+describe('연락처를 열어 두는 기간', () => {
+  const now = new Date('2026-09-13T00:00:00.000Z');
+  const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  it('성사되지 않은 매칭은 닫혀 있고, 수락·진행중인 간병은 열려 있다', () => {
+    expect(isContactOpen({ status: 'cancelled' }, now)).toBe(false);
+    expect(isContactOpen({ status: 'noShow' }, now)).toBe(false);
+    expect(isContactOpen({ status: 'accepted' }, now)).toBe(true);
+    expect(isContactOpen({ status: 'inProgress' }, now)).toBe(true);
+  });
+
+  it(`끝난 간병은 종료 뒤 ${ContactRetentionDays}일까지만 열려 있다`, () => {
+    expect(isContactOpen({ status: 'completed', completedAt: daysAgo(ContactRetentionDays - 1) }, now)).toBe(true);
+    expect(isContactOpen({ status: 'completed', completedAt: daysAgo(ContactRetentionDays) }, now)).toBe(false);
   });
 });
 

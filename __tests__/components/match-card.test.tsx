@@ -50,6 +50,14 @@ describe('MatchCard', () => {
     });
   });
 
+  it('끝난 지 오래된 간병은 연락처를 가린 이유를 알려 준다', () => {
+    const longAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    const old = makeMatch({ status: 'completed', completedAt: longAgo, caregiver: { name: '이OO' } });
+    render(<MatchCard match={old} viewer="guardian" reviewed />);
+
+    expect(screen.getByText(/연락처를 가렸습니다/)).toBeOnTheScreen();
+  });
+
   it('관리자가 끊은 매칭은 보호자가 취소한 것으로 보이지 않는다', () => {
     const cancelled = makeMatch({
       status: 'cancelled',

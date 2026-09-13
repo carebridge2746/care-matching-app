@@ -1,8 +1,10 @@
 import { mockCareRequestsAdapter as requests } from '@/api/care-requests.mock';
 import { mockMatchHistoryAdapter as history } from '@/api/match-history.mock';
 import { mockMatchingAdapter as matching } from '@/api/matching.mock';
-import { loadMatches } from '@/api/mock-store';
+import { loadMatches, loadPatients, saveMatches } from '@/api/mock-store';
 import { mockPatientsAdapter as patients } from '@/api/patients.mock';
+import { ContactRetentionDays } from '@/lib/privacy';
+import type { AiCareConditions } from '@/types';
 
 import {
   acceptRequest,
@@ -29,14 +31,60 @@ describe('환자 (Phase 3)', () => {
     expect(patient).not.toHaveProperty('relationship');
   });
 
-  it('환자를 지우면 그 환자의 요청과 매칭 기록도 함께 사라진다', async () => {
+  it('간병 기록이 없는 환자는 요청까지 함께 지운다', async () => {
+    const request = await seedRequest();
+
+    expect(await patients.remove(request.patientId)).toBe('deleted');
+
+    expect(await patients.list(Guardian)).toHaveLength(0);
+    expect(await requests.list(Guardian)).toHaveLength(0);
+    expect(await loadPatients()).toHaveLength(0);
+  });
+
+  it('간병 기록이 있는 환자는 기록을 남기고 이름과 건강 정보만 지운다', async () => {
+    const done = await seedRequest();
+    const match = await acceptRequest(done.id);
+    await history.start(match.id, Caregiver);
+    await history.complete(match.id, Guardian);
+    // 같은 환자로 올렸지만 아무도 수락하지 않은 요청
+    const untouched = await seedRequest({ patientId: done.patientId });
+
+    expect(await patients.remove(done.patientId)).toBe('anonymized');
+
+    // 보호자 목록에서는 빠지고, 기록이 없는 요청만 지워진다
+    expect(await patients.list(Guardian)).toHaveLength(0);
+    expect((await requests.list(Guardian)).map((item) => item.id)).toEqual([done.id]);
+    expect((await requests.list(Guardian)).map((item) => item.id)).not.toContain(untouched.id);
+    expect(await loadMatches()).toHaveLength(1);
+
+    const stored = (await loadPatients()).find((patient) => patient.id === done.patientId);
+    expect(stored).toMatchObject({ name: '삭제된 환자', conditions: [], deletedAt: expect.any(String) });
+    expect(stored).not.toHaveProperty('careNotes');
+    expect(stored).not.toHaveProperty('relationship');
+
+    // 간병인 쪽 기록에도 원래 이름과 특이사항이 남지 않는다
+    const caregiverView = await findMatch(done.id, Caregiver, Caregiver);
+    expect(caregiverView.patient.name).toBe('삭제된 환자');
+    expect(caregiverView.patient).not.toHaveProperty('careNotes');
+
+    await expect(patients.remove(done.patientId)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('진행 중인 간병이 있는 환자는 지울 수 없다', async () => {
     const request = await seedRequest();
     await acceptRequest(request.id);
 
-    await patients.remove(request.patientId);
+    await expect(patients.remove(request.patientId)).rejects.toMatchObject({ code: 'invalid_state' });
+    expect(await patients.list(Guardian)).toHaveLength(1);
+  });
 
-    expect(await requests.list(Guardian)).toHaveLength(0);
-    expect(await loadMatches()).toHaveLength(0);
+  it('기록이 있는데 대기중인 요청은 익명화하면서 취소로 닫는다 — 지운 환자로 다시 매칭되지 않게', async () => {
+    const request = await seedRequest();
+    const match = await acceptRequest(request.id);
+    await history.cancel(match.id, Caregiver);
+
+    expect(await patients.remove(request.patientId)).toBe('anonymized');
+    expect((await requests.list(Guardian))[0]?.status).toBe('cancelled');
   });
 });
 
@@ -65,6 +113,43 @@ describe('간병 요청과 수락 (Phase 3·4)', () => {
     await requests.accept(request.id, Caregiver);
 
     await expect(requests.accept(request.id, NewCaregiver)).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('요청 원문과 AI 정리 결과는 수락 전 간병인에게 내려가지 않고, 수락한 간병인에게만 원문이 열린다', async () => {
+    const aiConditions: AiCareConditions = {
+      location: '서울 강남구',
+      carePlace: 'hospital',
+      careType: [],
+      requiredSkills: [],
+      schedule: { weekdays: [] },
+      genderPreference: 'any',
+      additionalNotes: '김순자 어머니, 강남세브란스 7층',
+      confidence: 'low',
+    };
+    const request = await seedRequest({ requestText: '어머니 김순자, 강남세브란스 7층에 입원 중입니다.', aiConditions });
+
+    const listed = (await requests.listAvailable(Caregiver)).find((item) => item.id === request.id);
+    expect(listed).not.toHaveProperty('requestText');
+    expect(listed).not.toHaveProperty('aiConditions');
+
+    const accepted = await requests.accept(request.id, Caregiver);
+    expect(accepted.requestText).toBe('어머니 김순자, 강남세브란스 7층에 입원 중입니다.');
+    expect(accepted).not.toHaveProperty('aiConditions');
+
+    // 보호자 자신에게는 그대로 보인다
+    expect((await requests.list(Guardian))[0]?.requestText).toBe(request.requestText);
+  });
+
+  it('노쇼나 시작 전 취소로 다시 대기중이 된 요청도 지울 수 없고, 취소만 된다', async () => {
+    const request = await seedRequest();
+    const match = await acceptRequest(request.id);
+    await history.cancel(match.id, Caregiver);
+    expect((await requestOf(request.id))?.status).toBe('pending');
+
+    await expect(requests.remove(request.id)).rejects.toMatchObject({ code: 'invalid_state' });
+
+    expect((await requests.cancel(request.id)).status).toBe('cancelled');
+    expect(await loadMatches()).toHaveLength(1);
   });
 
   it('대기중 요청은 지울 수 있고, 매칭이 진행된 요청은 지울 수 없어 취소만 된다', async () => {
@@ -156,6 +241,35 @@ describe('간병 진행 (Phase 7)', () => {
 
     // 보호자 자신의 환자는 언제나 보인다
     expect((await findMatch(request.id, Caregiver)).patient.name).toBe('김순자');
+  });
+
+  it(`끝난 간병의 연락처·특이사항·원문은 종료 뒤 ${ContactRetentionDays}일까지만 열려 있다`, async () => {
+    const request = await seedRequest();
+    const match = await acceptRequest(request.id);
+    await history.start(match.id, Caregiver);
+    await history.complete(match.id, Guardian);
+
+    const open = await findMatch(request.id, Caregiver, Caregiver);
+    expect(open.guardian).toMatchObject({ name: '김영희', phone: expect.any(String) });
+    expect(open.care.requestText).toBe(request.requestText);
+
+    // 종료 시각을 기간보다 하루 전으로 옮긴다
+    const longAgo = new Date(Date.now() - (ContactRetentionDays + 1) * 24 * 60 * 60 * 1000).toISOString();
+    await saveMatches(
+      (await loadMatches()).map((item) => (item.id === match.id ? { ...item, completedAt: longAgo } : item))
+    );
+
+    const closed = await findMatch(request.id, Caregiver, Caregiver);
+    expect(closed.guardian).toEqual({ name: '김OO' });
+    expect(closed.patient.name).toBe('김OO');
+    expect(closed.patient).not.toHaveProperty('careNotes');
+    expect(closed.care).not.toHaveProperty('requestText');
+
+    // 보호자에게는 자기 환자와 원문이 그대로 보이고, 간병인의 연락처는 닫힌다
+    const own = await findMatch(request.id, Caregiver);
+    expect(own.patient.name).toBe('김순자');
+    expect(own.care.requestText).toBe(request.requestText);
+    expect(own.caregiver).toEqual({ name: '이OO' });
   });
 });
 

@@ -99,7 +99,7 @@ begin
   raise notice 'PASS: 보호자는 다른 사람 이름으로 환자를 등록할 수 없다 (42501)';
 end $$;
 
--- schema.sql 20) 의 컬럼 권한. 풀려 있으면 보호자가 매칭 기록을 제멋대로 채운다.
+-- schema.sql 20) 의 컬럼 권한과 65) 의 update 권한 회수. 풀려 있으면 보호자가 매칭 기록을 제멋대로 채운다.
 do $$
 declare
   rejected boolean := false;
