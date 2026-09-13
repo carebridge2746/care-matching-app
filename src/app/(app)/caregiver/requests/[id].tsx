@@ -5,10 +5,11 @@ import { StyleSheet, View } from 'react-native';
 import { MatchScoreBadge } from '@/components/care';
 import { AppButton, AppText, Card, EmptyState, LoadingView, Screen, StatusBadge } from '@/components/common';
 import { formatPeriod } from '@/lib/date';
-import { scoreMatch } from '@/lib/matching';
+import { completedTrainingTitles, scoreMatch } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
+import { useTrainingStore } from '@/store/use-training-store';
 import { Spacing } from '@/theme';
 import {
   ageFromBirthYear,
@@ -57,6 +58,10 @@ export default function CareRequestDetailScreen() {
   const profile = useCaregiverProfileStore((state) => state.profile);
   const loadProfile = useCaregiverProfileStore((state) => state.load);
 
+  const courses = useTrainingStore((state) => state.courses);
+  const completions = useTrainingStore((state) => state.completions);
+  const loadTraining = useTrainingStore((state) => state.load);
+
   const [isConfirming, setIsConfirming] = useState(false);
   const caregiverId = user?.id;
 
@@ -69,9 +74,10 @@ export default function CareRequestDetailScreen() {
       if (loadedCaregiverId !== caregiverId) {
         void load(caregiverId);
       }
-      // 적합도를 보여 주려면 내 프로필이 있어야 한다
+      // 적합도를 보여 주려면 내 프로필과 수료한 교육이 있어야 한다
       void loadProfile(caregiverId);
-    }, [caregiverId, load, loadProfile, loadedCaregiverId])
+      void loadTraining(caregiverId);
+    }, [caregiverId, load, loadProfile, loadTraining, loadedCaregiverId])
   );
 
   const request =
@@ -100,7 +106,12 @@ export default function CareRequestDetailScreen() {
   const isAccepting = acceptingId === request.id;
 
   // 프로필이 없으면 점수를 매길 수 없다. 그때는 수락을 막지 않는다.
-  const match = profile ? scoreMatch(profile, request) : null;
+  const match = profile
+    ? scoreMatch(
+        { ...profile, completedTrainings: completedTrainingTitles(courses, completions) },
+        request
+      )
+    : null;
   const canAccept = isOpen && match?.isEligible !== false;
 
   const handleAccept = async () => {

@@ -22,6 +22,8 @@ export type AppUser = {
   name: string;
   role: UserRole;
   phone?: string;
+  /** 탈퇴한 시각. 탈퇴한 계정은 로그인할 수 없고, 기록에는 '탈퇴한 사용자'로 남는다. */
+  withdrawnAt?: string;
 };
 
 // --- 환자 -------------------------------------------------------------------
@@ -294,6 +296,11 @@ export type CaregiverCandidate = {
    * 별점을 배점에 섞으면 후기가 없는 새 간병인이 계속 아래로 밀려 첫 매칭을 잡지 못한다.
    */
   rating: UserRating;
+  /**
+   * 앱에서 수료한 교육 이름. 보여 주고 매칭 점수에도 작게 반영한다(src/lib/matching.ts).
+   * 본인이 적은 자격(certifications)과 섞지 않는다 — 이쪽은 앱이 채점해서 확인한 기록이다.
+   */
+  completedTrainings: string[];
 };
 
 /** 점수 한 줄. 총점만 보여 주면 왜 그 사람이 위에 있는지 알 수 없다. */

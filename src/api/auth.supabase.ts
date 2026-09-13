@@ -187,6 +187,15 @@ export const supabaseAuthAdapter: AuthAdapter = {
     }
   },
 
+  async withdraw() {
+    // TODO(Supabase): 탈퇴 함수를 schema.sql 에 두고 부른다. 규칙은 auth.mock.ts 의 withdraw 와 같다 —
+    //   예정·진행 중인 간병이 있으면 거절하고, profiles 의 이름·연락처·이메일을 지우고 withdrawn_at 을 적고,
+    //   기록이 없는 요청·환자는 지우고 기록이 있는 요청의 원문과 환자 정보는 익명화한다.
+    //   auth.users 행은 앱이 아니라 서비스 키를 가진 Edge Function 이 막아야 한다 — 그대로 지우면
+    //   profiles 에서 이어지는 cascade 로 매칭·후기 기록까지 사라진다.
+    throw new AuthError('not_configured', '탈퇴는 아직 Mock 모드에서만 동작합니다.');
+  },
+
   subscribe(onChange) {
     const supabase = getSupabaseClient();
     const { data } = supabase.auth.onAuthStateChange((event) => {

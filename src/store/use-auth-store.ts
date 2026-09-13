@@ -18,6 +18,8 @@ type AuthState = {
   signIn: (input: SignInInput) => Promise<boolean>;
   signUp: (input: SignUpInput) => Promise<boolean>;
   signOut: () => Promise<void>;
+  /** 탈퇴. 성공하면 로그아웃된 상태가 되고, 거절되면 이유를 errorMessage 에 남긴다. */
+  withdraw: () => Promise<boolean>;
   clearError: () => void;
 };
 
@@ -94,6 +96,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } finally {
       // 저장소 삭제가 실패하더라도 화면상으로는 반드시 로그아웃시킨다
       set({ user: null, isSubmitting: false, errorMessage: null });
+    }
+  },
+
+  withdraw: async () => {
+    const userId = get().user?.id;
+    if (!userId) {
+      return false;
+    }
+
+    set({ isSubmitting: true, errorMessage: null });
+    try {
+      await authApi.withdraw(userId);
+      set({ user: null, isSubmitting: false });
+      return true;
+    } catch (error) {
+      set({ errorMessage: toAuthErrorMessage(error), isSubmitting: false });
+      return false;
     }
   },
 

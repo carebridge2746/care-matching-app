@@ -3,9 +3,10 @@ import { readMockUsers } from '@/api/auth.mock';
 import { readAllMockCaregiverProfiles } from '@/api/caregiver.mock';
 import { mockNoShowCaregiverIds } from '@/api/match-history.mock';
 import type { MatchingAdapter } from '@/api/matching.types';
-import { delay, loadCareRequests } from '@/api/mock-store';
+import { delay, loadCareRequests, loadTrainingCompletions } from '@/api/mock-store';
 import { readMockRatings } from '@/api/reviews.mock';
-import { scoreMatch } from '@/lib/matching';
+import { DemoTrainingCourses } from '@/api/training.demo';
+import { completedTrainingTitles, scoreMatch } from '@/lib/matching';
 import { maskPersonName } from '@/lib/privacy';
 import { EmptyRating, type CaregiverCandidate, type CaregiverProfile, type UserRating } from '@/types';
 
@@ -23,7 +24,8 @@ const CandidateLimit = 50;
 function toCandidate(
   profile: CaregiverProfile,
   name: string,
-  rating: UserRating
+  rating: UserRating,
+  completedTrainings: string[]
 ): CaregiverCandidate {
   return {
     id: profile.id,
@@ -39,6 +41,7 @@ function toCandidate(
     ...(profile.introduction ? { introduction: profile.introduction } : {}),
     availability: profile.availability,
     rating,
+    completedTrainings,
   };
 }
 
@@ -53,13 +56,15 @@ export const mockMatchingAdapter: MatchingAdapter = {
       throw new ApiError('not_found', '요청을 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
 
-    const [profiles, users, ratings, noShowIds] = await Promise.all([
+    const [profiles, users, ratings, noShowIds, completions] = await Promise.all([
       readAllMockCaregiverProfiles(),
       readMockUsers(),
       // 평균 별점은 저장해 두지 않고 여기서 센다 — Supabase 쪽에서는 user_ratings 뷰가 같은 일을 한다
       readMockRatings(),
       // 이 요청에서 오지 않았던 사람들 (Phase 10)
       mockNoShowCaregiverIds(requestId),
+      // 앱에서 수료한 교육. 보호자에게 보여 주고 점수에도 조금 반영한다.
+      loadTrainingCompletions(),
     ]);
 
     return profiles
@@ -73,15 +78,26 @@ export const mockMatchingAdapter: MatchingAdapter = {
         if (noShowIds.includes(profile.id)) {
           return false;
         }
-        // 맡을 수 없는 장소이거나 보호자가 지정한 성별이 아니면 후보가 아니다
-        return scoreMatch(profile, request).isEligible;
+        // 맡을 수 없는 장소이거나 보호자가 지정한 성별이 아니면 후보가 아니다.
+        // 제외 조건만 보므로 수료 기록은 아직 붙이지 않는다.
+        return scoreMatch({ ...profile, completedTrainings: [] }, request).isEligible;
       })
       .flatMap((profile) => {
         const user = users.find((item) => item.id === profile.id);
-        // 계정이 사라진 프로필은 내보내지 않는다 (Supabase 쪽에서는 조인이 같은 일을 한다)
-        return user
-          ? [toCandidate(profile, user.name, ratings.get(profile.id) ?? EmptyRating)]
-          : [];
+        // 계정이 사라졌거나 탈퇴한 사람의 프로필은 내보내지 않는다 (Supabase 쪽에서는 조인이 같은 일을 한다)
+        if (!user || user.withdrawnAt) {
+          return [];
+        }
+
+        const mine = completions.filter((completion) => completion.caregiverId === profile.id);
+        return [
+          toCandidate(
+            profile,
+            user.name,
+            ratings.get(profile.id) ?? EmptyRating,
+            completedTrainingTitles(DemoTrainingCourses, mine)
+          ),
+        ];
       })
       .slice(0, CandidateLimit);
   },

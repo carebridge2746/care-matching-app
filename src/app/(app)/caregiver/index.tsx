@@ -5,7 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { CaregiverRequestCard } from '@/components/care';
 import { AppButton, AppText, Card, Screen } from '@/components/common';
 import { summarizeAvailability } from '@/lib/availability';
-import { rankRequestsForCaregiver } from '@/lib/matching';
+import { completedTrainingTitles, rankRequestsForCaregiver } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
@@ -54,10 +54,15 @@ export default function CaregiverHomeScreen() {
     }, [caregiverId, loadMatches, loadProfile, loadRequests, loadTraining])
   );
 
-  // 프로필이 있으면 나에게 가장 잘 맞는 요청을, 없으면 가장 최근 요청을 보여 준다
+  // 프로필이 있으면 나에게 가장 잘 맞는 요청을, 없으면 가장 최근 요청을 보여 준다.
+  // 보호자 화면과 같은 점수가 나오도록 앱에서 수료한 교육도 함께 넘긴다.
   const [best] = useMemo(
-    () => rankRequestsForCaregiver(available, profile).filter(({ score }) => score?.isEligible !== false),
-    [available, profile]
+    () =>
+      rankRequestsForCaregiver(
+        available,
+        profile && { ...profile, completedTrainings: completedTrainingTitles(courses, completions) }
+      ).filter(({ score }) => score?.isEligible !== false),
+    [available, completions, courses, profile]
   );
 
   if (!user) {
@@ -152,6 +157,13 @@ export default function CaregiverHomeScreen() {
             : courses.length > 0
               ? `들을 수 있는 교육 ${courses.length}개`
               : '아직 열린 교육이 없습니다'}
+        </AppText>
+      </Card>
+
+      <Card onPress={() => router.push('/caregiver/account')}>
+        <AppText variant="subheading">계정</AppText>
+        <AppText variant="body" tone="secondary">
+          내 정보 확인 · 탈퇴
         </AppText>
       </Card>
 

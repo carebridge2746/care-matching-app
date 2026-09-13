@@ -28,6 +28,11 @@ export type AuthAdapter = {
   signUp: (input: SignUpInput) => Promise<AppUser>;
   signOut: () => Promise<void>;
   /**
+   * 탈퇴. 이름·연락처·이메일을 지우고 매칭·후기·노쇼 기록은 '탈퇴한 사용자'로 남긴다.
+   * 예정되었거나 진행 중인 간병이 있으면 withdrawal_blocked 로 거절한다. 끝나면 세션도 사라진다.
+   */
+  withdraw: (userId: string) => Promise<void>;
+  /**
    * 앱이 요청하지 않았는데 세션이 바뀌었을 때 알린다.
    * (토큰 갱신 실패, 다른 기기에서 로그아웃, 계정 삭제 등)
    * 구독을 해제하는 함수를 돌려준다. 지원하지 않는 구현은 생략한다.
@@ -52,6 +57,8 @@ export type AuthErrorCode =
   | 'rate_limited'
   /** 서버에 연결하지 못함 */
   | 'network_error'
+  /** 예정되었거나 진행 중인 간병이 있는 등, 지금은 탈퇴할 수 없음 */
+  | 'withdrawal_blocked'
   /** 환경 변수 등 설정이 끝나지 않음 */
   | 'not_configured'
   | 'unknown';

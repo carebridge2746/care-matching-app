@@ -55,6 +55,12 @@ export function CaregiverRecommendationCard({
         경력 {caregiver.yearsOfExperience}년
         {caregiver.certifications.length > 0 ? ` · ${caregiver.certifications.join(', ')}` : ''}
       </AppText>
+      {/* 앱에서 채점해 확인한 수료. 본인이 적은 자격과 섞지 않고 따로 보여 준다. */}
+      <AppText variant="caption" tone="secondary">
+        {caregiver.completedTrainings.length > 0
+          ? `앱 교육 수료 · ${caregiver.completedTrainings.join(', ')}`
+          : '앱 교육 수료 없음'}
+      </AppText>
       <AppText variant="caption" tone="secondary">
         {caregiver.regions.join(', ')}
         {availability ? ` · ${availability}` : ''}

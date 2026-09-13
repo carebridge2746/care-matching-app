@@ -7,6 +7,8 @@ import {
   type CaregiverProfile,
   type MatchResult,
   type MatchScoreItem,
+  type TrainingCompletion,
+  type TrainingCourse,
 } from '@/types';
 
 /**
@@ -21,18 +23,28 @@ import {
  * 왜 그 사람이 위에 있는지를 항목별 점수(MatchScoreItem)로 그대로 보여 줄 수 있다.
  */
 
-/** 항목별 배점. 합이 100이 되도록 맞춘다. */
+/**
+ * 항목별 배점. 합이 100이 되도록 맞춘다.
+ *
+ * 교육 수료는 작게 둔다. 크게 두면 교육을 아직 못 들은 새 간병인이 계속 아래로 밀려 첫 매칭을
+ * 잡지 못한다. 대신 본인이 적는 자격(certification)보다는 조금 더 쳐 준다 — 수료는 앱이 채점해서
+ * 확인한 기록이고, 자격은 본인이 신고한 값이다. 경력과 자격에서 조금씩 떼어 와 합을 맞췄다.
+ */
 export const MatchWeights = {
   region: 25,
   skills: 25,
   availability: 20,
   budget: 15,
-  experience: 10,
-  certification: 5,
+  experience: 7,
+  certification: 3,
+  training: 5,
 } as const;
 
 /** 경력을 만점으로 치는 기준 년수. 그 이상은 더 벌어지지 않는다. */
 const ExperienceCap = 5;
+
+/** 앱 교육을 이만큼 수료하면 만점. 과정이 늘어나도 수료 개수로 크게 벌어지지 않게 둔다. */
+const TrainingCap = 2;
 
 /** 추천 목록에 올릴 최소 점수. 이보다 낮으면 굳이 보여 주지 않는다. */
 export const RecommendationThreshold = 40;
@@ -54,7 +66,11 @@ export type MatchRequestConditions = Pick<
   | 'dailyEndTime'
 >;
 
-/** 점수 계산에 필요한 간병인 조건만. CaregiverProfile 과 CaregiverCandidate 둘 다 만족한다. */
+/**
+ * 점수 계산에 필요한 간병인 조건만. CaregiverCandidate 는 그대로 만족하고,
+ * 간병인 본인 화면은 CaregiverProfile 에 수료한 교육(completedTrainingTitles)을 붙여 넘긴다 —
+ * 빠뜨리면 보호자에게 보이는 점수와 본인에게 보이는 점수가 달라진다.
+ */
 export type MatchCaregiverConditions = Pick<
   CaregiverProfile,
   | 'gender'
@@ -65,7 +81,10 @@ export type MatchCaregiverConditions = Pick<
   | 'regions'
   | 'minDailyWage'
   | 'availability'
->;
+> & {
+  /** 앱에서 수료한 교육 이름. 본인이 적은 자격(certifications)과 따로 센다. */
+  completedTrainings: string[];
+};
 
 /** '서울  강남구' 와 '서울 강남구' 를 같은 지역으로 본다 */
 function normalizeRegion(region: string): string {
@@ -234,6 +253,18 @@ function scoreCertification(certifications: string[]): MatchScoreItem {
   };
 }
 
+function scoreTraining(completedTrainings: string[]): MatchScoreItem {
+  const max = MatchWeights.training;
+  const count = completedTrainings.length;
+
+  return {
+    label: '교육 수료',
+    score: round((max * Math.min(count, TrainingCap)) / TrainingCap),
+    max,
+    detail: count > 0 ? completedTrainings.join(', ') : '수료한 앱 교육 없음',
+  };
+}
+
 /**
  * 아무리 점수가 높아도 추천해서는 안 되는 조건.
  *
@@ -276,6 +307,7 @@ export function scoreMatch(
     scoreBudget(caregiver, request.budgetPerDay),
     scoreExperience(caregiver.yearsOfExperience),
     scoreCertification(caregiver.certifications),
+    scoreTraining(caregiver.completedTrainings),
   ];
 
   return {
@@ -314,4 +346,18 @@ export function rankRequestsForCaregiver<T extends MatchRequestConditions>(
       }
       return b.score.total - a.score.total;
     });
+}
+
+/**
+ * 수료 기록을 과정 이름으로 바꾼다. 없어진 과정의 수료는 세지 않는다.
+ * 보호자 쪽(추천 후보)과 간병인 쪽(내 화면)이 같은 이름 목록으로 점수를 내게 한 곳에 둔다.
+ */
+export function completedTrainingTitles(
+  courses: Pick<TrainingCourse, 'id' | 'title'>[],
+  completions: Pick<TrainingCompletion, 'courseId'>[]
+): string[] {
+  return completions.flatMap((completion) => {
+    const course = courses.find((item) => item.id === completion.courseId);
+    return course ? [course.title] : [];
+  });
 }

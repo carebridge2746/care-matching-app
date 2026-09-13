@@ -2,7 +2,7 @@ import { Stack } from 'expo-router';
 
 import { StackScreenOptions } from '@/lib/navigation';
 
-/** 보호자 화면 묶음 — 홈, 환자 관리, 간병 요청, 간병 진행, 받은 후기 */
+/** 보호자 화면 묶음 — 홈, 환자 관리, 간병 요청, 간병 진행, 받은 후기, 계정 */
 export default function GuardianLayout() {
   return (
     <Stack screenOptions={StackScreenOptions}>
@@ -14,6 +14,7 @@ export default function GuardianLayout() {
       <Stack.Screen name="requests/new" options={{ title: '간병 요청 작성' }} />
       <Stack.Screen name="matches/index" options={{ title: '간병 진행' }} />
       <Stack.Screen name="reviews/index" options={{ title: '받은 후기' }} />
+      <Stack.Screen name="account/index" options={{ title: '계정' }} />
     </Stack>
   );
 }

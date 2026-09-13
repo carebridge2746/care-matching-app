@@ -1,3 +1,4 @@
+import { hasScheduledStartPassed } from '@/lib/arrival';
 import { today as todayIsoDate } from '@/lib/date';
 import type { CareMatch } from '@/types';
 
@@ -26,14 +27,14 @@ export function isMatchOverdue(match: CareMatch, today: string = todayIsoDate())
 /**
  * 노쇼로 신고할 수 있는 간병.
  *
- * 시작일 당일부터 신고할 수 있다. 시작일이 지나야만 신고할 수 있게 하면, 오늘 오기로 한
- * 간병인이 오지 않은 그날 — 대체 간병인이 가장 급한 날 — 에는 아무것도 할 수 없다.
- * 아직 오지 않은 날짜의 간병을 미리 신고하는 것만 막는다.
+ * 약속한 시작 시각이 지난 뒤부터 신고할 수 있다(시각을 적지 않은 요청은 오전 9시).
+ * 시작일이 지나야만 받으면 오지 않은 그날 — 대체 간병인이 가장 급한 날 — 에 아무것도 할 수 없고,
+ * 날짜만 보면 저녁 간병을 아침부터 "오지 않았다"고 신고할 수 있다.
  *
  * 같은 판정을 저장소도 한다. 화면의 잠금은 안내이지 판정이 아니다.
  */
-export function canReportNoShow(match: CareMatch, today: string = todayIsoDate()): boolean {
-  return match.status === 'accepted' && match.care.startDate <= today;
+export function canReportNoShow(match: CareMatch, now: Date = new Date()): boolean {
+  return match.status === 'accepted' && hasScheduledStartPassed(match.care, now);
 }
 
 /** 확인이 필요한 간병. 보호자 화면 맨 위에 모아 둔다. */

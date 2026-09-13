@@ -4,8 +4,18 @@ import {
   type SignInInput,
   type SignUpInput,
 } from '@/api/auth.types';
+import { readAllMockCaregiverProfiles } from '@/api/caregiver.mock';
+import {
+  loadCareRequests,
+  loadMatches,
+  loadPatients,
+  saveCareRequests,
+  saveCaregiverProfiles,
+  savePatients,
+} from '@/api/mock-store';
+import { AnonymizedPatientName, WithdrawnRequestText, WithdrawnUserName } from '@/lib/privacy';
 import { readJson, removeKey, writeJson } from '@/lib/storage';
-import type { AppUser } from '@/types';
+import { isMatchLive, type AppUser, type CareRequest, type Match, type Patient } from '@/types';
 
 /**
  * 로컬 Mock 인증 어댑터.
@@ -122,8 +132,8 @@ export const mockAuthAdapter: AuthAdapter = {
 
     const accounts = await loadAccounts();
     const account = accounts.find((item) => item.id === session.userId);
-    if (!account) {
-      // 저장된 세션이 가리키는 계정이 사라진 경우 세션도 함께 정리한다
+    if (!account || account.withdrawnAt) {
+      // 저장된 세션이 가리키는 계정이 사라졌거나 탈퇴한 경우 세션도 함께 정리한다
       await removeKey(SessionKey);
       return null;
     }
@@ -137,7 +147,7 @@ export const mockAuthAdapter: AuthAdapter = {
     const accounts = await loadAccounts();
     const account = accounts.find((item) => item.email === normalizeEmail(email));
 
-    if (!account || account.password !== password) {
+    if (!account || account.withdrawnAt || account.password !== password) {
       // 어떤 이메일이 가입되어 있는지 알려주지 않도록 두 경우 모두 같은 문구를 쓴다
       throw new AuthError(
         'invalid_credentials',
@@ -185,7 +195,126 @@ export const mockAuthAdapter: AuthAdapter = {
     await delay(NetworkDelayMs / 2);
     await removeKey(SessionKey);
   },
+
+  async withdraw(userId) {
+    await delay(NetworkDelayMs);
+
+    const accounts = await loadAccounts();
+    const account = accounts.find((item) => item.id === userId && !item.withdrawnAt);
+
+    if (!account) {
+      throw new AuthError('invalid_credentials', '계정을 찾지 못했습니다. 다시 로그인해 주세요.');
+    }
+    // 관리자 계정은 조치 기록의 주인이다. 앱에서 스스로 지우지 않는다.
+    if (account.role === 'admin') {
+      throw new AuthError('withdrawal_blocked', '관리자 계정은 앱에서 탈퇴할 수 없습니다.');
+    }
+
+    const matches = await loadMatches();
+    const isInvolved = (match: Match) => match.guardianId === userId || match.caregiverId === userId;
+
+    // 상대가 기다리고 있는 간병을 두고 사라지면, 상대는 연락할 길도 없이 노쇼와 같은 일을 겪는다
+    if (matches.some((match) => isInvolved(match) && isMatchLive(match.status))) {
+      throw new AuthError(
+        'withdrawal_blocked',
+        '예정되었거나 진행 중인 간병이 있어 지금은 탈퇴할 수 없습니다. 간병을 마치거나 취소한 뒤에 탈퇴해 주세요.'
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    if (account.role === 'guardian') {
+      await closeGuardianRecords(userId, matches, now);
+    } else {
+      await clearCaregiverProfile(userId, now);
+    }
+
+    const { phone: _phone, ...rest } = account;
+    const withdrawn: MockAccount = {
+      ...rest,
+      name: WithdrawnUserName,
+      // 같은 이메일로 다시 가입할 수 있게 비워 두고, 옛 비밀번호로는 들어오지 못하게 한다
+      email: `withdrawn-${account.id}@deleted.invalid`,
+      password: `withdrawn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+      withdrawnAt: now,
+    };
+
+    await saveAccounts(accounts.map((item) => (item.id === userId ? withdrawn : item)));
+    await removeKey(SessionKey);
+  },
 };
+
+/**
+ * 탈퇴한 보호자의 요청과 환자를 정리한다. 환자 삭제(patients.mock.ts)와 같은 규칙이다.
+ *
+ * - 간병 기록이 없는 요청은 지운다. 기록이 있으면 남기되, 원문과 AI 정리 결과는 지운다 —
+ *   원문에는 이름·병원 같은 개인정보가 섞여 있다. 아직 대기중이면 다시 매칭되지 않도록 취소로 닫는다.
+ * - 남은 요청이 가리키지 않는 환자는 지우고, 가리키는 환자는 이름과 건강 정보만 지운다.
+ *
+ * 매칭 기록은 건드리지 않는다. 간병인이 받은 후기와 노쇼 기록이 보호자의 탈퇴로 사라지면 안 된다.
+ */
+async function closeGuardianRecords(guardianId: string, matches: Match[], now: string): Promise<void> {
+  const requestIdsWithHistory = new Set(matches.map((match) => match.requestId));
+
+  const requests = (await loadCareRequests()).flatMap((request): CareRequest[] => {
+    if (request.guardianId !== guardianId) {
+      return [request];
+    }
+    if (!requestIdsWithHistory.has(request.id)) {
+      return [];
+    }
+
+    const { aiConditions: _aiConditions, aiAnalyzedAt: _aiAnalyzedAt, ...rest } = request;
+    return [
+      {
+        ...rest,
+        requestText: WithdrawnRequestText,
+        ...(request.status === 'pending' ? { status: 'cancelled' as const } : {}),
+        updatedAt: now,
+      },
+    ];
+  });
+  await saveCareRequests(requests);
+
+  const patientIdsInUse = new Set(
+    requests.filter((request) => request.guardianId === guardianId).map((request) => request.patientId)
+  );
+
+  const patients = (await loadPatients()).flatMap((patient): Patient[] => {
+    if (patient.guardianId !== guardianId) {
+      return [patient];
+    }
+    if (!patientIdsInUse.has(patient.id)) {
+      return [];
+    }
+    if (patient.deletedAt) {
+      return [patient];
+    }
+
+    const { relationship: _relationship, careNotes: _careNotes, ...rest } = patient;
+    return [{ ...rest, name: AnonymizedPatientName, conditions: [], deletedAt: now, updatedAt: now }];
+  });
+  await savePatients(patients);
+}
+
+/**
+ * 탈퇴한 간병인의 프로필에서 자기소개를 지운다. 자기소개는 본인이 자유롭게 적은 글이라 개인정보가
+ * 섞여 있을 수 있다. 추천 후보에서는 탈퇴한 계정을 빼므로(matching.mock.ts) 나머지 조건은 누구에게도
+ * 보이지 않는다. 교육 수료와 받은 후기는 기록으로 남긴다.
+ */
+async function clearCaregiverProfile(caregiverId: string, now: string): Promise<void> {
+  const profiles = await readAllMockCaregiverProfiles();
+
+  await saveCaregiverProfiles(
+    profiles.map((profile) => {
+      if (profile.id !== caregiverId) {
+        return profile;
+      }
+      const { introduction: _introduction, ...rest } = profile;
+      return { ...rest, updatedAt: now };
+    })
+  );
+}
 
 /**
  * 저장된 사용자 목록을 이름 조회용으로 읽는다.

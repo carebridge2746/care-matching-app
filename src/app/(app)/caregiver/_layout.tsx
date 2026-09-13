@@ -2,7 +2,7 @@ import { Stack } from 'expo-router';
 
 import { StackScreenOptions } from '@/lib/navigation';
 
-/** 간병인 화면 묶음 — 홈, 프로필·받은 후기·가능 시간, 요청 찾기·상세, 수락한 요청, 교육 */
+/** 간병인 화면 묶음 — 홈, 프로필·받은 후기·가능 시간, 요청 찾기·상세, 수락한 요청, 교육, 계정 */
 export default function CaregiverLayout() {
   return (
     <Stack screenOptions={StackScreenOptions}>
@@ -16,6 +16,7 @@ export default function CaregiverLayout() {
       <Stack.Screen name="training/index" options={{ title: '교육과 수료' }} />
       {/* 과정 이름은 화면이 열린 뒤에야 알 수 있어서 제목을 고정해 둔다 */}
       <Stack.Screen name="training/[id]" options={{ title: '교육 과정' }} />
+      <Stack.Screen name="account/index" options={{ title: '계정' }} />
     </Stack>
   );
 }

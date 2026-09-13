@@ -5,8 +5,8 @@ import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
 import {
   assessArrival,
+  formatScheduledStart,
   isStoppedByCaregiver,
-  scheduledStartAt,
   SharingWindowHours,
 } from '@/lib/arrival';
 import { formatClockTime } from '@/lib/date';
@@ -47,6 +47,10 @@ function headlineOf(sharing: LocationSharing): string {
   if (sharing.status === 'ended') {
     return sharing.arrivedAt ? '도착 완료 · 위치 공유가 끝났습니다' : '위치 공유가 끝났습니다';
   }
+  // 판단 배지가 이미 '이동 중'이라고 말하므로 같은 말을 되풀이하지 않는다
+  if (sharing.status === 'sharing') {
+    return '약속 장소로 이동하고 있습니다';
+  }
   return LocationSharingStatusLabels[sharing.status];
 }
 
@@ -84,7 +88,6 @@ export function GuardianArrivalStatus({ match, sharing, now = new Date() }: Guar
 
   const assessment = assessArrival(match, sharing, now);
   const guidance = guidanceOf(assessment, sharing);
-  const startsAt = scheduledStartAt(match.care);
 
   return (
     <Card>
@@ -99,7 +102,7 @@ export function GuardianArrivalStatus({ match, sharing, now = new Date() }: Guar
 
       <AppText variant="caption" tone="secondary">
         {[
-          `간병 시작 ${formatClockTime(startsAt.toISOString())}`,
+          `간병 시작 ${formatScheduledStart(match.care)}`,
           sharing.estimatedArrivalAt ? `예상 도착 ${formatClockTime(sharing.estimatedArrivalAt)}` : null,
           sharing.arrivedAt ? `도착 ${formatClockTime(sharing.arrivedAt)}` : null,
           sharing.lastUpdatedAt ? `마지막 업데이트 ${formatClockTime(sharing.lastUpdatedAt)}` : null,

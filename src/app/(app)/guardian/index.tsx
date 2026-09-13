@@ -124,6 +124,13 @@ export default function GuardianHomeScreen() {
         </AppText>
       </Card>
 
+      <Card onPress={() => router.push('/guardian/account')}>
+        <AppText variant="subheading">계정</AppText>
+        <AppText variant="body" tone="secondary">
+          내 정보 확인 · 탈퇴
+        </AppText>
+      </Card>
+
       {recentRequests.length > 0 ? (
         <View style={styles.section}>
           <AppText variant="heading">최근 요청</AppText>

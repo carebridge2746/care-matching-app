@@ -9,7 +9,13 @@ import {
   saveCareRequests,
   saveMatches,
 } from '@/api/mock-store';
-import { formatKoreanDate, today } from '@/lib/date';
+import {
+  canStartCareAt,
+  careWindowOpensAt,
+  formatScheduledStart,
+  hasScheduledStartPassed,
+} from '@/lib/arrival';
+import { formatClockTime, formatKoreanDate, toIsoDate } from '@/lib/date';
 import { isContactOpen, maskPersonName } from '@/lib/privacy';
 import {
   isMatchLive,
@@ -204,13 +210,15 @@ export const mockMatchHistoryAdapter: MatchHistoryAdapter = {
       throw new ApiError('invalid_state', '이미 시작했거나 끝난 간병입니다. 목록을 새로 불러와 주세요.');
     }
 
-    // 시작일 전에는 시작할 수 없다. 막지 않으면 "9월 14일부터"인 간병이 13일에 시작·종료되어
-    // 기간과 기록이 서로 어긋난다. Supabase 쪽에서는 start_care() 가 같은 조건을 건다.
+    // 약속한 시작 몇 시간 전부터 시작할 수 있다(src/lib/arrival.ts). 막지 않으면 "9월 14일부터"인
+    // 간병이 13일에 시작·종료되거나, 저녁 간병을 아침에 시작해 두어 기간과 기록이 어긋난다.
+    // TODO(Supabase): start_care()(schema.sql 64)는 아직 시작일만 본다. 같은 시각 기준으로 맞춘다.
     const request = (await loadCareRequests()).find((item) => item.id === match.requestId);
-    if (request && request.startDate > today()) {
+    if (request && !canStartCareAt(request)) {
+      const opensAt = careWindowOpensAt(request);
       throw new ApiError(
         'invalid_state',
-        `${formatKoreanDate(request.startDate)}부터 간병을 시작할 수 있습니다.`
+        `${formatKoreanDate(toIsoDate(opensAt))} ${formatClockTime(opensAt.toISOString())}부터 간병을 시작할 수 있습니다.`
       );
     }
 
@@ -305,9 +313,13 @@ export const mockMatchHistoryAdapter: MatchHistoryAdapter = {
     if (!request) {
       throw new ApiError('not_found', '간병 정보를 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
-    // 아직 오지 않은 날짜의 간병을 미리 신고할 수는 없다
-    if (request.startDate > today()) {
-      throw new ApiError('invalid_state', '간병 시작일이 지나야 신고할 수 있습니다.');
+    // 약속한 시작 시각이 지나야 "오지 않았다"고 말할 수 있다. 저녁 간병을 아침에 미리 신고할 수는 없다.
+    // TODO(Supabase): report_no_show() 는 아직 시작일만 본다. 같은 시각 기준으로 맞춘다.
+    if (!hasScheduledStartPassed(request)) {
+      throw new ApiError(
+        'invalid_state',
+        `간병 시작 시각(${formatKoreanDate(request.startDate)} ${formatScheduledStart(request)})이 지나야 신고할 수 있습니다.`
+      );
     }
 
     const now = new Date().toISOString();

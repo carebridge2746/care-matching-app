@@ -54,6 +54,10 @@ function toCandidate(row: RecommendationCandidateRow): CaregiverCandidate {
     ...(row.introduction ? { introduction: row.introduction } : {}),
     availability: parseAvailability(row.availability),
     rating: toRating(row.rating_avg, row.review_count),
+    // TODO(Supabase): recommendation_candidates() 가 아직 수료한 교육을 내보내지 않는다.
+    //   training_completions 를 과정 이름과 함께 모아 반환 컬럼에 더하면 여기서 채운다.
+    //   그 전까지 Supabase 모드에서는 교육 수료 점수가 0점으로 계산된다.
+    completedTrainings: [],
   };
 }
 

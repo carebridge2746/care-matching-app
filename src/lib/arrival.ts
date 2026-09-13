@@ -50,11 +50,37 @@ export function scheduledStartAt(care: ArrivalMatch['care']): Date {
 }
 
 /**
+ * 시작 SharingWindowHours 시간 전. 이때부터 이동을 알리고 간병 시작도 누를 수 있다.
+ * 두 가지를 같은 시각에 여는 것은, 일찍 도착한 간병인이 도착은 알렸는데 시작은 못 누르는 틈을 없애기 위해서다.
+ */
+export function careWindowOpensAt(care: ArrivalMatch['care']): Date {
+  return new Date(scheduledStartAt(care).getTime() - SharingWindowHours * 60 * MinuteMs);
+}
+
+/**
  * 위치 공유를 쓸 수 있는 시간대인지.
  * 간병 일정과 관련된 시간에만 쓰도록 시작 SharingWindowHours 시간 전부터 연다.
  */
 export function isWithinSharingWindow(care: ArrivalMatch['care'], now: Date = new Date()): boolean {
-  return now.getTime() >= scheduledStartAt(care).getTime() - SharingWindowHours * 60 * MinuteMs;
+  return now.getTime() >= careWindowOpensAt(care).getTime();
+}
+
+/**
+ * 간병 시작을 누를 수 있는지. 이동을 알릴 수 있는 시간대와 같다.
+ * 날짜만 보면 저녁 간병을 아침에 시작해 둘 수 있어 기록이 실제와 어긋난다.
+ */
+export function canStartCareAt(care: ArrivalMatch['care'], now: Date = new Date()): boolean {
+  return isWithinSharingWindow(care, now);
+}
+
+/** 약속한 시작 시각이 지났는지. 노쇼 신고는 이때부터 받는다. */
+export function hasScheduledStartPassed(care: ArrivalMatch['care'], now: Date = new Date()): boolean {
+  return now.getTime() >= scheduledStartAt(care).getTime();
+}
+
+/** '17:00'. 시각을 적지 않은 요청은 '09:00(시각 미정)' — 기준 시각으로 판단했다는 것을 숨기지 않는다. */
+export function formatScheduledStart(care: ArrivalMatch['care']): string {
+  return care.dailyStartTime ?? `${DefaultCareStartTime}(시각 미정)`;
 }
 
 /** 아직 아무것도 하지 않은 매칭의 기록 */

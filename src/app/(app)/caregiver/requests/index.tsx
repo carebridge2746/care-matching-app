@@ -4,10 +4,11 @@ import { StyleSheet, View } from 'react-native';
 
 import { CaregiverRequestCard } from '@/components/care';
 import { AppText, Card, EmptyState, LoadingView, Screen } from '@/components/common';
-import { rankRequestsForCaregiver } from '@/lib/matching';
+import { completedTrainingTitles, rankRequestsForCaregiver } from '@/lib/matching';
 import { useAuthStore } from '@/store/use-auth-store';
 import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useCaregiverRequestsStore } from '@/store/use-caregiver-requests-store';
+import { useTrainingStore } from '@/store/use-training-store';
 import { Spacing } from '@/theme';
 
 /**
@@ -31,6 +32,10 @@ export default function AvailableRequestsScreen() {
   const profile = useCaregiverProfileStore((state) => state.profile);
   const loadProfile = useCaregiverProfileStore((state) => state.load);
 
+  const courses = useTrainingStore((state) => state.courses);
+  const completions = useTrainingStore((state) => state.completions);
+  const loadTraining = useTrainingStore((state) => state.load);
+
   const caregiverId = user?.id;
 
   useFocusEffect(
@@ -38,13 +43,19 @@ export default function AvailableRequestsScreen() {
       if (caregiverId) {
         void load(caregiverId);
         void loadProfile(caregiverId);
+        // 교육 수료도 점수에 들어간다
+        void loadTraining(caregiverId);
       }
-    }, [caregiverId, load, loadProfile])
+    }, [caregiverId, load, loadProfile, loadTraining])
   );
 
   const ranked = useMemo(
-    () => rankRequestsForCaregiver(available, profile),
-    [available, profile]
+    () =>
+      rankRequestsForCaregiver(
+        available,
+        profile && { ...profile, completedTrainings: completedTrainingTitles(courses, completions) }
+      ),
+    [available, completions, courses, profile]
   );
 
   if (isLoading && available.length === 0) {

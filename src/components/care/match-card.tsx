@@ -5,7 +5,14 @@ import { AppButton } from '@/components/common/app-button';
 import { AppText } from '@/components/common/app-text';
 import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
-import { formatKoreanDate, formatKoreanTimestamp, formatPeriod, today } from '@/lib/date';
+import { canStartCareAt, careWindowOpensAt, formatScheduledStart } from '@/lib/arrival';
+import {
+  formatClockTime,
+  formatKoreanDate,
+  formatKoreanTimestamp,
+  formatPeriod,
+  toIsoDate,
+} from '@/lib/date';
 import { canReportNoShow, isMatchOverdue } from '@/lib/no-show';
 import { ContactRetentionDays, isContactOpen } from '@/lib/privacy';
 import { Layout, Spacing } from '@/theme';
@@ -47,6 +54,8 @@ export type MatchCardProps = {
   reviewDeleted?: boolean;
   /** 값을 주면 요청 상세로 가는 링크가 보인다 */
   onPress?: () => void;
+  /** 테스트에서 시각을 고정할 때만 넘긴다 */
+  now?: Date;
 };
 
 /**
@@ -74,6 +83,7 @@ export function MatchCard({
   reviewed = false,
   reviewDeleted = false,
   onPress,
+  now = new Date(),
 }: MatchCardProps) {
   /** 종료 확인을 펼쳤는지. 종료는 되돌릴 수 없어서 한 번 더 묻는다. */
   const [isConfirmingComplete, setConfirmingComplete] = useState(false);
@@ -84,13 +94,21 @@ export function MatchCard({
 
   const isLive = isMatchLive(match.status);
   const isAwaitingStart = isLive && viewer === 'caregiver' && match.status === 'accepted';
-  // 시작일 전에는 시작할 수 없다. 저장소도 같은 판정을 한다 — 여기서는 버튼을 감출 뿐이다.
-  const hasStartDateArrived = care.startDate <= today();
-  const canStart = isAwaitingStart && hasStartDateArrived;
+  // 약속한 시작 몇 시간 전부터 누를 수 있다. 저장소도 같은 판정을 한다 — 여기서는 버튼을 감출 뿐이다.
+  const isStartOpen = canStartCareAt(care, now);
+  const startOpensAt = careWindowOpensAt(care);
+  const canStart = isAwaitingStart && isStartOpen;
   const canComplete = isLive && match.status === 'inProgress';
   // 시작일이 지났는데 아직 시작되지 않았다. 이것만으로 노쇼는 아니지만 확인이 필요하다.
   const isOverdue = isMatchOverdue(match);
-  const canReport = Boolean(onReportNoShow) && viewer === 'guardian' && canReportNoShow(match);
+  const canReport = Boolean(onReportNoShow) && viewer === 'guardian' && canReportNoShow(match, now);
+  // 시작일이 되었는데 아직 시작 시각 전이라 신고 버튼이 없다. 왜 없는지 알려 준다.
+  const isWaitingForStartTime =
+    Boolean(onReportNoShow) &&
+    viewer === 'guardian' &&
+    match.status === 'accepted' &&
+    !canReport &&
+    care.startDate <= toIsoDate(now);
 
   return (
     <Card>
@@ -164,9 +182,16 @@ export function MatchCard({
         </AppText>
       ) : null}
 
-      {isAwaitingStart && !hasStartDateArrived ? (
+      {isAwaitingStart && !isStartOpen ? (
         <AppText variant="caption" tone="secondary">
-          {formatKoreanDate(care.startDate)}부터 간병 시작을 누를 수 있습니다.
+          {formatKoreanDate(toIsoDate(startOpensAt))} {formatClockTime(startOpensAt.toISOString())}부터
+          간병 시작을 누를 수 있습니다.
+        </AppText>
+      ) : null}
+
+      {isWaitingForStartTime ? (
+        <AppText variant="caption" tone="secondary">
+          간병 시작 시각({formatScheduledStart(care)})이 지나도 오지 않으면 신고할 수 있습니다.
         </AppText>
       ) : null}
 

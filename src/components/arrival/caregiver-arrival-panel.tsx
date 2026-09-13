@@ -5,8 +5,8 @@ import { AppText } from '@/components/common/app-text';
 import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
 import {
+  formatScheduledStart,
   isWithinSharingWindow,
-  scheduledStartAt,
   SharingWindowHours,
 } from '@/lib/arrival';
 import { formatClockTime, formatKoreanDate } from '@/lib/date';
@@ -79,7 +79,6 @@ export function CaregiverArrivalPanel({
     return null;
   }
 
-  const startsAt = scheduledStartAt(match.care);
   const withinWindow = isWithinSharingWindow(match.care, now);
 
   return (
@@ -106,7 +105,7 @@ export function CaregiverArrivalPanel({
       ) : sharing.status === 'notStarted' || sharing.status === 'ended' ? (
         !withinWindow ? (
           <AppText variant="body" tone="secondary">
-            {formatKoreanDate(match.care.startDate)} {formatClockTime(startsAt.toISOString())} 시작
+            {formatKoreanDate(match.care.startDate)} {formatScheduledStart(match.care)} 시작
             예정입니다. 시작 {SharingWindowHours}시간 전부터 이동을 알릴 수 있습니다.
           </AppText>
         ) : (

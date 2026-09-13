@@ -47,11 +47,20 @@ export function isContactOpen(
  */
 export const AnonymizedPatientName = '삭제된 환자';
 
-/** '김영희' → '김OO'. 한 글자 이름은 그대로 둔다. */
+/** 탈퇴한 사용자의 이름. 매칭·후기·노쇼 기록은 남기고 이름 자리에 이 문구를 둔다. */
+export const WithdrawnUserName = '탈퇴한 사용자';
+
+/** 탈퇴한 보호자가 남긴 요청의 원문 자리. 원문에는 이름·병원 같은 개인정보가 섞여 있어 지운다. */
+export const WithdrawnRequestText = '탈퇴한 보호자의 요청입니다. 원문은 지웠습니다.';
+
+/** 사람 이름이 아니라 자리를 채우는 문구. '삭OOOO'처럼 가리면 사람 이름으로 읽힌다. */
+const PlaceholderNames: readonly string[] = [AnonymizedPatientName, WithdrawnUserName];
+
+/** '김영희' → '김OO'. 한 글자 이름과 자리 문구는 그대로 둔다. */
 export function maskPersonName(name: string): string {
   const trimmed = name.trim();
 
-  if (trimmed.length <= 1) {
+  if (trimmed.length <= 1 || PlaceholderNames.includes(trimmed)) {
     return trimmed;
   }
 
