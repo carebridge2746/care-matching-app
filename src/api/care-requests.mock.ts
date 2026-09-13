@@ -6,7 +6,13 @@ import {
   hasMockNoShow,
   removeMockMatchesForRequests,
 } from '@/api/match-history.mock';
-import { delay, loadCareRequests, loadPatients, saveCareRequests } from '@/api/mock-store';
+import {
+  delay,
+  loadCareRequests,
+  loadMatches,
+  loadPatients,
+  saveCareRequests,
+} from '@/api/mock-store';
 import { maskPersonName } from '@/lib/privacy';
 import type { CareRequest, CaregiverCareRequest, Patient, PatientSummary } from '@/types';
 
@@ -63,14 +69,23 @@ function fromInput(id: string, guardianId: string, input: CareRequestInput): Car
  * 요청에 환자 요약을 붙여 간병인이 볼 형태로 바꾼다.
  *
  * 보호자 식별자와 환자 식별자는 떼어 낸다.
- * 환자 이름은 이 요청을 수락한 간병인에게만 그대로 보여 주고, 그 전에는 성만 남긴다.
+ * 환자 이름과 요청 원문은 이 요청을 수락한 간병인에게만 보여 주고, 그 전에는 이름은 성만 남기고
+ * 원문은 내려보내지 않는다. AI 가 정리한 결과는 간병인에게 내려가지 않는다 —
+ * Supabase 쪽 caregiver_care_requests 뷰에도 그 컬럼이 없다.
  */
 function toCaregiverRequest(
   request: CareRequest,
   patient: Patient,
   caregiverId: string
 ): CaregiverCareRequest {
-  const { guardianId: _guardianId, patientId: _patientId, ...rest } = request;
+  const {
+    guardianId: _guardianId,
+    patientId: _patientId,
+    requestText,
+    aiConditions: _aiConditions,
+    aiAnalyzedAt: _aiAnalyzedAt,
+    ...rest
+  } = request;
 
   const isMine = request.matchedCaregiverId === caregiverId;
   const summary: PatientSummary = {
@@ -82,7 +97,7 @@ function toCaregiverRequest(
     conditions: patient.conditions,
   };
 
-  return { ...rest, patient: summary };
+  return { ...rest, ...(isMine ? { requestText } : {}), patient: summary };
 }
 
 /**
@@ -151,11 +166,17 @@ export const mockCareRequestsAdapter: CareRequestsAdapter = {
     if (target.status !== 'pending') {
       throw new ApiError('invalid_state', '이미 매칭이 진행된 요청은 삭제할 수 없습니다. 취소만 가능합니다.');
     }
+    // 대기중이어도 매칭 기록이 붙어 있을 수 있다 (노쇼 신고, 시작 전 취소).
+    // 지우면 그 기록이 함께 사라져 노쇼와 후기가 없어지므로 취소만 받는다.
+    // Supabase 쪽에서는 삭제 정책(schema.sql 66)이 같은 조건을 건다.
+    if ((await loadMatches()).some((match) => match.requestId === id)) {
+      throw new ApiError(
+        'invalid_state',
+        '간병 기록이 남아 있는 요청은 삭제할 수 없습니다. 취소만 할 수 있습니다.'
+      );
+    }
 
     await saveCareRequests(all.filter((request) => request.id !== id));
-    // 대기중 요청에도 지난 매칭 이력이 붙어 있을 수 있다 (수락됐다가 시작 전에 취소된 경우).
-    // Supabase 쪽에서는 외래키 cascade 가 같은 일을 한다.
-    await removeMockMatchesForRequests([id]);
   },
 
   async listAvailable(caregiverId) {

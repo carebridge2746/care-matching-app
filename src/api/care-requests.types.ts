@@ -53,7 +53,12 @@ export type CareRequestsAdapter = {
    * 이미 매칭된 요청은 지우지 않고 취소로 남긴다 — 매칭·평가 기록이 이 행에 이어지기 때문이다.
    */
   cancel: (id: string) => Promise<CareRequest>;
-  /** 아직 매칭되지 않은(pending) 요청만 지울 수 있다 */
+  /**
+   * 대기중이면서 매칭이 한 번도 붙지 않은 요청만 지울 수 있다.
+   *
+   * 노쇼 신고나 시작 전 취소 뒤에는 요청이 다시 대기중이 되는데, 그 요청을 지우면 매칭 기록이
+   * 함께 사라져 노쇼와 후기가 없어진다. 그런 요청은 `invalid_state` 로 거절하고 취소만 받는다.
+   */
   remove: (id: string) => Promise<void>;
 
   /**

@@ -27,6 +27,9 @@ export function toApiError(error: PostgrestError, fallbackMessage: string): ApiE
       return new ApiError('invalid_input', '입력한 내용이 저장 조건에 맞지 않습니다. 다시 확인해 주세요.');
     case '23505':
       return new ApiError('invalid_input', '이미 등록된 자료입니다.');
+    // 함수가 "지금 상태에서는 할 수 없다"고 거절한 경우. 문구는 함수가 화면에 보일 문장으로 쓴다.
+    case '22023':
+      return new ApiError('invalid_state', error.message || fallbackMessage);
     default:
       break;
   }

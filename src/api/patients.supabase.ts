@@ -102,17 +102,20 @@ export const supabasePatientsAdapter: PatientsAdapter = {
     return toPatient(data);
   },
 
+  // 행을 직접 지우지 않고 remove_patient() 를 부른다. 간병 기록이 있으면 익명화해야 하는데,
+  // 그 판단과 여러 표에 걸친 정리를 한 트랜잭션에서 해야 하기 때문이다(schema.sql 67).
+  // 지운 환자는 조회 정책이 목록에서 뺀다.
   async remove(id) {
     const supabase = getSupabaseClient();
-    // 지운 행을 돌려받아, RLS에 막혀 아무것도 지워지지 않은 경우를 구분한다.
-    // 이 환자의 간병 요청은 외래키 cascade 로 함께 지워진다.
-    const { data, error } = await supabase.from('patients').delete().eq('id', id).select('id');
+    const { data, error } = await supabase.rpc('remove_patient', { target_patient: id });
 
     if (error) {
       throw toApiError(error, '환자 정보를 삭제하지 못했습니다.');
     }
-    if (data.length === 0) {
+    if (!data) {
       throw new ApiError('not_found', '환자 정보를 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
+
+    return data;
   },
 };

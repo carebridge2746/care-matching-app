@@ -10,7 +10,7 @@ import {
   saveMatches,
 } from '@/api/mock-store';
 import { formatKoreanDate, today } from '@/lib/date';
-import { maskPersonName } from '@/lib/privacy';
+import { isContactOpen, maskPersonName } from '@/lib/privacy';
 import {
   isMatchLive,
   type AppUser,
@@ -38,9 +38,9 @@ function byRecentlyAccepted(a: Match, b: Match): number {
   return b.acceptedAt.localeCompare(a.acceptedAt);
 }
 
-function toCareSummary(request: CareRequest): MatchCareSummary {
+function toCareSummary(request: CareRequest, showRequestText: boolean): MatchCareSummary {
   return {
-    requestText: request.requestText,
+    ...(showRequestText ? { requestText: request.requestText } : {}),
     careType: request.careType,
     region: request.region,
     startDate: request.startDate,
@@ -89,11 +89,13 @@ function toCareMatch(
   viewerId: string
 ): CareMatch {
   // 취소된 매칭과 오지 않은 매칭은 만남이 성사되지 않은 것이다. 연락처를 다시 가린다.
-  const engaged = match.status !== 'cancelled' && match.status !== 'noShow';
+  // 끝난 간병도 종료 뒤 일정 기간이 지나면 닫는다 (src/lib/privacy.ts).
+  const engaged = isContactOpen(match);
 
   return {
     ...match,
-    care: toCareSummary(request),
+    // 요청 원문은 보호자 자신에게는 언제나, 간병인에게는 연락처가 열려 있는 동안만 보인다
+    care: toCareSummary(request, viewerId === match.guardianId || engaged),
     patient: toPatientSummary(patient, viewerId === match.guardianId || engaged),
     caregiver: toContact(
       users.find((user) => user.id === match.caregiverId),

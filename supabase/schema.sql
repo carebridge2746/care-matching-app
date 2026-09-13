@@ -3426,3 +3426,298 @@ end;
 $$;
 
 comment on function public.start_care(uuid) is '수락한 간병을 진행중으로 바꾼다. 당사자 간병인만, accepted 상태에서만, 시작일(한국 시간)부터 된다.';
+
+-- 65) 요청 행은 함수로만 바꾼다 ------------------------------------------------
+--
+-- 20) 은 status 를 열어 두었다 — 보호자의 취소가 앱에서 곧바로 update 로 나갔기 때문이다.
+-- 그 때문에 보호자는 매칭이 살아 있는 요청을 completed·no_show 로 적을 수 있었고, 간병인이
+-- 수락한 뒤에 시작일·예산 같은 조건을 바꿀 수도 있었다. 앱에는 요청을 고치는 화면이 없으므로
+-- update 권한을 모두 거두고, 취소는 아래 함수로만 한다.
+
+revoke update on public.care_requests from authenticated;
+drop policy if exists "보호자 본인 요청 수정" on public.care_requests;
+
+create or replace function public.cancel_care_request(request_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  cancelled_id uuid;
+begin
+  update public.care_requests r
+     set status = 'cancelled'
+   where r.id = request_id
+     and r.guardian_id = (select auth.uid())
+     and r.status not in ('completed', 'cancelled')
+  returning r.id into cancelled_id;
+
+  -- 살아 있던 매칭은 care_requests_cancel_matches 트리거가 함께 취소한다
+  return cancelled_id;
+end;
+$$;
+
+comment on function public.cancel_care_request(uuid) is '보호자가 자기 요청을 취소한다. 이미 끝났거나 취소된 요청이면 null. 살아 있던 매칭은 트리거가 함께 취소한다.';
+
+revoke all on function public.cancel_care_request(uuid) from public, anon;
+grant execute on function public.cancel_care_request(uuid) to authenticated;
+
+-- 66) 간병 기록이 붙은 요청은 지우지 않는다 ------------------------------------
+--
+-- 대기중 요청만 지울 수 있었지만, 노쇼 신고나 시작 전 취소 뒤에는 요청이 다시 대기중이 된다.
+-- 그 요청을 지우면 matches 가 외래키 cascade 로 함께 지워져 노쇼 기록과 그 매칭의 후기가 사라졌다.
+-- 매칭이 한 번이라도 붙었던 요청은 취소만 할 수 있다.
+--
+-- 안쪽 조회는 보호자 권한으로 돈다. 보호자는 자기가 낀 매칭을 읽을 수 있으므로 걸러낼 수 있다.
+
+drop policy if exists "보호자 대기중 요청 삭제" on public.care_requests;
+create policy "보호자 대기중 요청 삭제"
+  on public.care_requests for delete
+  to authenticated
+  using (
+    (select auth.uid()) = guardian_id
+    and status = 'pending'
+    and not exists (select 1 from public.matches m where m.request_id = care_requests.id)
+  );
+
+-- 67) 환자 정보는 지우되 간병 기록은 남긴다 -----------------------------------
+--
+-- 환자를 지우면 요청 → 매칭 → 후기 → 신고가 cascade 로 모두 지워졌다. 보호자가 환자 한 명을
+-- 지우는 것으로 간병인이 받은 후기와 노쇼 기록까지 없앨 수 있었다.
+--
+-- 그렇다고 삭제를 막으면 보호자가 가족의 건강 정보를 지울 길이 없어진다. 그래서 둘을 나눈다.
+--   - 간병 기록이 없으면 지금처럼 행을 지운다.
+--   - 기록이 있으면 행은 남기고 이름·관계·질환·특이사항을 지운다. 기록이 가리키는 자리는 남는다.
+--   - 진행 중인 간병이 있으면 지우지 않는다. 간병인이 보고 있는 환자 정보가 갑자기 사라진다.
+--
+-- 출생연도·성별·거동·인지 상태는 not null 이라 남긴다. 이름이 지워지면 그것만으로 사람을
+-- 되짚기 어렵다. 이름 자리의 '삭제된 환자'는 앱의 AnonymizedPatientName 과 같아야 한다.
+
+alter table public.patients add column if not exists deleted_at timestamptz;
+
+comment on column public.patients.deleted_at is '보호자가 지운 시각. 간병 기록이 남아 있어 행을 익명화해 남긴 경우에만 채워진다.';
+
+-- 지운 환자는 보호자 목록에서 빠진다. 매칭·요청 뷰는 security definer 라 이 정책과 무관하게
+-- 기록을 잇는다.
+drop policy if exists "보호자 본인 환자 조회" on public.patients;
+create policy "보호자 본인 환자 조회"
+  on public.patients for select
+  to authenticated
+  using ((select auth.uid()) = guardian_id and deleted_at is null);
+
+-- 지운 환자는 고칠 수 없고, 보호자가 deleted_at 을 직접 적거나 비울 수도 없다
+drop policy if exists "보호자 본인 환자 수정" on public.patients;
+create policy "보호자 본인 환자 수정"
+  on public.patients for update
+  to authenticated
+  using ((select auth.uid()) = guardian_id and deleted_at is null)
+  with check ((select auth.uid()) = guardian_id and deleted_at is null);
+
+-- 앱은 아래 remove_patient() 로 지운다. 정책은 기록이 없는 환자만 행째 지울 수 있게 남겨 둔다.
+drop policy if exists "보호자 본인 환자 삭제" on public.patients;
+create policy "보호자 본인 환자 삭제"
+  on public.patients for delete
+  to authenticated
+  using (
+    (select auth.uid()) = guardian_id
+    and not exists (
+      select 1
+      from public.care_requests r
+      join public.matches m on m.request_id = r.id
+      where r.patient_id = patients.id
+    )
+  );
+
+-- 지운 환자로 새 요청을 올리지 못하게 한다
+drop policy if exists "보호자 본인 요청 등록" on public.care_requests;
+create policy "보호자 본인 요청 등록"
+  on public.care_requests for insert
+  to authenticated
+  with check (
+    (select auth.uid()) = guardian_id
+    and exists (
+      select 1 from public.patients p
+      where p.id = care_requests.patient_id and p.deleted_at is null
+    )
+  );
+
+create or replace function public.remove_patient(target_patient uuid)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  found_id uuid;
+begin
+  select p.id into found_id
+  from public.patients p
+  where p.id = target_patient
+    and p.guardian_id = (select auth.uid())
+    and p.deleted_at is null
+  for update;
+
+  -- 없는 환자와 남의 환자를 구분해서 알려 주지 않는다
+  if found_id is null then
+    return null;
+  end if;
+
+  if exists (
+    select 1
+    from public.care_requests r
+    join public.matches m on m.request_id = r.id
+    where r.patient_id = found_id and m.status in ('accepted', 'in_progress')
+  ) then
+    raise exception '진행 중인 간병이 있어 지금은 환자 정보를 지울 수 없습니다. 간병을 마치거나 취소한 뒤에 지워 주세요.'
+      using errcode = '22023';
+  end if;
+
+  if not exists (
+    select 1
+    from public.care_requests r
+    join public.matches m on m.request_id = r.id
+    where r.patient_id = found_id
+  ) then
+    delete from public.patients p where p.id = found_id;
+    return 'deleted';
+  end if;
+
+  -- 기록이 없는 요청은 지우고, 기록이 있는데 아직 대기중인 요청은 다시 매칭되지 않도록 닫는다
+  delete from public.care_requests r
+   where r.patient_id = found_id
+     and not exists (select 1 from public.matches m where m.request_id = r.id);
+
+  update public.care_requests r
+     set status = 'cancelled'
+   where r.patient_id = found_id
+     and r.status = 'pending';
+
+  update public.patients p
+     set name = '삭제된 환자',
+         relationship = null,
+         conditions = '{}',
+         care_notes = null,
+         deleted_at = now()
+   where p.id = found_id;
+
+  return 'anonymized';
+end;
+$$;
+
+comment on function public.remove_patient(uuid) is '환자를 지운다. 간병 기록이 없으면 행째 지우고(deleted), 있으면 이름·관계·질환·특이사항만 지운다(anonymized). 진행 중인 간병이 있으면 거절한다.';
+
+revoke all on function public.remove_patient(uuid) from public, anon;
+grant execute on function public.remove_patient(uuid) to authenticated;
+
+-- 68) 요청 원문은 수락한 간병인에게만 -----------------------------------------
+--
+-- 원문은 보호자가 자유롭게 적은 글이라 이름·병원·연락처가 섞일 수 있다. 수락 전 간병인은
+-- 고른 조건과 환자 요약(거동·인지·질환)으로 판단하고, 원문은 수락한 뒤에 본다.
+-- 11) 의 뷰와 컬럼은 같고 request_text 한 줄만 바뀐다.
+
+create or replace view public.caregiver_care_requests
+with (security_invoker = false) as
+select
+  r.id,
+  case when r.matched_caregiver_id = (select auth.uid()) then r.request_text end as request_text,
+  r.care_type,
+  r.region,
+  r.start_date,
+  r.end_date,
+  r.daily_start_time,
+  r.daily_end_time,
+  r.required_skills,
+  r.preferred_caregiver_gender,
+  r.budget_per_day,
+  r.status,
+  r.matched_caregiver_id,
+  r.matched_at,
+  r.created_at,
+  r.updated_at,
+  case
+    when r.matched_caregiver_id = (select auth.uid()) then p.name
+    else public.mask_person_name(p.name)
+  end as patient_name,
+  p.birth_year as patient_birth_year,
+  p.gender as patient_gender,
+  p.mobility as patient_mobility,
+  p.cognition as patient_cognition,
+  p.conditions as patient_conditions
+from public.care_requests r
+join public.patients p on p.id = r.patient_id
+where public.is_caregiver()
+  and (r.status = 'pending' or r.matched_caregiver_id = (select auth.uid()));
+
+comment on view public.caregiver_care_requests is '간병인이 요청을 읽는 유일한 창구. 대기중 요청과 본인이 수락한 요청만, 보호자 정보 없이 내보낸다. 원문은 수락한 간병인에게만 담긴다.';
+
+-- 69) 끝난 간병의 연락처는 30일 뒤 닫는다 --------------------------------------
+--
+-- 47) 의 match_details 는 끝난 간병을 성사된 매칭으로 계속 보았다. 그래서 간병이 끝난 뒤에도
+-- 상대의 전화번호와 환자 특이사항이 기한 없이 열려 있었다.
+-- 마무리 연락과 재의뢰를 할 여유로 30일을 두고, 그 뒤로는 취소된 매칭처럼 가린다.
+-- 앱의 ContactRetentionDays(src/lib/privacy.ts)와 같은 값이어야 한다.
+--
+-- 요청 원문도 같은 판정을 따른다. 보호자 자신에게는 언제나 보인다.
+-- 47) 의 뷰와 컬럼은 같고 engaged 판정과 request_text 한 줄이 바뀐다.
+
+create or replace view public.match_details
+with (security_invoker = false) as
+select
+  m.id,
+  m.request_id,
+  m.guardian_id,
+  m.caregiver_id,
+  m.status,
+  m.accepted_at,
+  m.started_at,
+  m.completed_at,
+  m.cancelled_at,
+  m.cancelled_by,
+  m.cancel_reason,
+  m.no_show_at,
+  m.no_show_note,
+  m.created_at,
+  m.updated_at,
+
+  case when v.viewer = m.guardian_id or v.engaged then r.request_text end as request_text,
+  r.care_type,
+  r.region,
+  r.start_date,
+  r.end_date,
+  r.daily_start_time,
+  r.daily_end_time,
+  r.required_skills,
+  r.budget_per_day,
+
+  case when v.viewer = m.guardian_id or v.engaged then pt.name
+       else public.mask_person_name(pt.name) end as patient_name,
+  pt.birth_year as patient_birth_year,
+  pt.gender as patient_gender,
+  pt.mobility as patient_mobility,
+  pt.cognition as patient_cognition,
+  pt.conditions as patient_conditions,
+  case when v.viewer = m.guardian_id or v.engaged then pt.care_notes end as patient_care_notes,
+
+  case when v.viewer = m.caregiver_id or v.engaged then cg.name
+       else public.mask_person_name(cg.name) end as caregiver_name,
+  case when v.viewer = m.caregiver_id or v.engaged then cg.phone end as caregiver_phone,
+
+  case when v.viewer = m.guardian_id or v.engaged then gu.name
+       else public.mask_person_name(gu.name) end as guardian_name,
+  case when v.viewer = m.guardian_id or v.engaged then gu.phone end as guardian_phone
+from public.matches m
+join public.care_requests r on r.id = m.request_id
+join public.patients pt on pt.id = r.patient_id
+join public.profiles cg on cg.id = m.caregiver_id
+join public.profiles gu on gu.id = m.guardian_id
+-- engaged = 연락처가 열려 있는 매칭. 취소·노쇼는 닫혀 있고, 끝난 간병은 종료 뒤 30일까지만 열린다.
+cross join lateral (
+  select
+    (select auth.uid()) as viewer,
+    m.status not in ('cancelled', 'no_show')
+      and not (m.status = 'completed' and m.completed_at < now() - interval '30 days') as engaged
+) v
+where m.guardian_id = v.viewer or m.caregiver_id = v.viewer;
+
+comment on view public.match_details is '매칭 당사자가 서로와 간병 내용을 읽는 창구. 취소·노쇼 매칭과 종료 30일이 지난 매칭은 연락처·특이사항·요청 원문을 다시 가린다.';

@@ -56,7 +56,8 @@ function toCareMatch(row: MatchDetailRow): CareMatch {
     updatedAt: row.updated_at,
 
     care: {
-      requestText: row.request_text,
+      // 간병인에게는 연락처가 열려 있는 동안만 담겨 온다
+      ...(row.request_text ? { requestText: row.request_text } : {}),
       careType: row.care_type,
       region: row.region,
       startDate: row.start_date,

@@ -33,10 +33,9 @@ type SelectedRow = CareRequestRow;
 
 type CareRequestInsert = Database['public']['Tables']['care_requests']['Insert'];
 
-/** 보호자용과 간병인용이 똑같이 쓰는 조건 부분 */
+/** 보호자용과 간병인용이 똑같이 쓰는 조건 부분. 원문은 두 쪽이 달라서 각자 붙인다. */
 function toCareRequestFields(row: SelectedRow | CaregiverCareRequestRow) {
   return {
-    requestText: row.request_text,
     careType: row.care_type,
     region: row.region,
     startDate: row.start_date,
@@ -60,6 +59,7 @@ function toCareRequest(row: SelectedRow): CareRequest {
     id: row.id,
     guardianId: row.guardian_id,
     patientId: row.patient_id,
+    requestText: row.request_text,
     ...toCareRequestFields(row),
     // jsonb 는 무엇이든 담을 수 있으므로 타입은 여기서만 붙인다.
     // 값의 형태는 Edge Function 의 스키마가 정하고, 앱 타입으로 옮기는 일은 llm.supabase.ts 가 한다.
@@ -71,6 +71,8 @@ function toCareRequest(row: SelectedRow): CareRequest {
 function toCaregiverCareRequest(row: CaregiverCareRequestRow): CaregiverCareRequest {
   return {
     id: row.id,
+    // 뷰가 수락한 간병인에게만 원문을 담아 보낸다. 그 밖에는 null 이다.
+    ...(row.request_text ? { requestText: row.request_text } : {}),
     ...toCareRequestFields(row),
     patient: {
       name: row.patient_name,
@@ -135,22 +137,32 @@ export const supabaseCareRequestsAdapter: CareRequestsAdapter = {
     return toCareRequest(data);
   },
 
+  // 요청 행은 앱이 직접 update 하지 못한다(schema.sql 65). 취소는 함수로만 한다.
+  // 살아 있던 매칭은 데이터베이스 트리거가 함께 취소한다.
   async cancel(id) {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from('care_requests')
-      .update({ status: 'cancelled' })
-      .eq('id', id)
-      // 이미 끝났거나 취소된 요청은 건드리지 않는다
-      .not('status', 'in', '("completed","cancelled")')
-      .select(Columns)
-      .maybeSingle();
+    const { data: cancelledId, error } = await supabase.rpc('cancel_care_request', {
+      request_id: id,
+    });
 
     if (error) {
       throw toApiError(error, '요청을 취소하지 못했습니다.');
     }
-    if (!data) {
+    if (!cancelledId) {
       throw new ApiError('invalid_state', '이미 끝났거나 취소된 요청입니다. 목록을 새로 불러와 주세요.');
+    }
+
+    const { data, error: readError } = await supabase
+      .from('care_requests')
+      .select(Columns)
+      .eq('id', cancelledId)
+      .maybeSingle();
+
+    if (readError) {
+      throw toApiError(readError, '취소한 요청을 불러오지 못했습니다.');
+    }
+    if (!data) {
+      throw new ApiError('not_found', '요청을 찾지 못했습니다. 목록을 새로 불러와 주세요.');
     }
 
     return toCareRequest(data);
@@ -158,7 +170,8 @@ export const supabaseCareRequestsAdapter: CareRequestsAdapter = {
 
   async remove(id) {
     const supabase = getSupabaseClient();
-    // 삭제 정책이 pending 상태만 허용한다. 막히면 오류 없이 0건이 지워지므로 결과로 확인한다.
+    // 삭제 정책이 대기중이면서 매칭이 한 번도 붙지 않은 요청만 허용한다(schema.sql 66).
+    // 막히면 오류 없이 0건이 지워지므로 결과로 확인한다.
     const { data, error } = await supabase.from('care_requests').delete().eq('id', id).select('id');
 
     if (error) {
@@ -167,7 +180,7 @@ export const supabaseCareRequestsAdapter: CareRequestsAdapter = {
     if (data.length === 0) {
       throw new ApiError(
         'invalid_state',
-        '이미 매칭이 진행된 요청은 삭제할 수 없습니다. 취소만 가능합니다.'
+        '이미 매칭이 진행됐거나 간병 기록이 남아 있는 요청은 삭제할 수 없습니다. 취소만 할 수 있습니다.'
       );
     }
   },

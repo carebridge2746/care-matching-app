@@ -7,6 +7,7 @@ import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
 import { formatKoreanDate, formatKoreanTimestamp, formatPeriod, today } from '@/lib/date';
 import { canReportNoShow, isMatchOverdue } from '@/lib/no-show';
+import { ContactRetentionDays, isContactOpen } from '@/lib/privacy';
 import { Layout, Spacing } from '@/theme';
 import {
   ageFromBirthYear,
@@ -116,6 +117,12 @@ export function MatchCard({
         {counterpartLabel} {counterpart.name}
         {counterpart.phone ? ` · ${counterpart.phone}` : ''}
       </AppText>
+      {/* 연락처가 왜 사라졌는지 말해 주지 않으면 앱이 고장 난 것으로 읽힌다 */}
+      {match.status === 'completed' && !isContactOpen(match) ? (
+        <AppText variant="caption" tone="tertiary">
+          간병이 끝나고 {ContactRetentionDays}일이 지나 연락처를 가렸습니다.
+        </AppText>
+      ) : null}
 
       {/* 시각은 상태가 옮겨 간 자리마다 남아 있다. 지금 상태에 해당하는 것만 보여 준다. */}
       {match.status === 'inProgress' && match.startedAt ? (

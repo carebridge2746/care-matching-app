@@ -77,8 +77,10 @@ export type CareRequestRow = {
  */
 export type CaregiverCareRequestRow = Omit<
   CareRequestRow,
-  'guardian_id' | 'patient_id' | 'ai_conditions' | 'ai_analyzed_at'
+  'guardian_id' | 'patient_id' | 'ai_conditions' | 'ai_analyzed_at' | 'request_text'
 > & {
+  /** 요청 원문. 이 요청을 수락한 간병인에게만 담기고 그 밖에는 null 이다 (schema.sql 68). */
+  request_text: string | null;
   patient_name: string;
   patient_birth_year: number;
   patient_gender: Gender;
@@ -181,7 +183,8 @@ export type MatchRow = {
  * 취소한 쪽(cancelled_by)은 양쪽 모두 될 수 있어서 함께 내보낸다.
  */
 export type MatchDetailRow = Omit<MatchRow, 'no_show_reported_by'> & {
-  request_text: string;
+  /** 보호자에게는 언제나, 간병인에게는 연락처가 열려 있는 동안만 담긴다 (schema.sql 69) */
+  request_text: string | null;
   care_type: CareType;
   region: string;
   start_date: string;
@@ -696,6 +699,22 @@ export type Database = {
       accept_care_request: {
         Args: { request_id: string };
         Returns: string | null;
+      };
+      /**
+       * 보호자가 자기 요청을 취소한다. 요청 행은 앱이 직접 바꿀 수 없다(schema.sql 65).
+       * 이미 끝났거나 취소된 요청이면 null 을 돌려준다.
+       */
+      cancel_care_request: {
+        Args: { request_id: string };
+        Returns: string | null;
+      };
+      /**
+       * 환자를 지운다. 간병 기록이 없으면 행째 지우고('deleted'), 있으면 익명화한다('anonymized').
+       * 남의 환자이거나 이미 지운 환자면 null, 진행 중인 간병이 있으면 예외(22023)다.
+       */
+      remove_patient: {
+        Args: { target_patient: string };
+        Returns: 'deleted' | 'anonymized' | null;
       };
       /** 이 요청의 추천 후보가 될 수 있는 간병인. 본인이 올린 요청에만 쓸 수 있다. */
       recommendation_candidates: {

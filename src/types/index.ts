@@ -72,6 +72,14 @@ export type Patient = {
   careNotes?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * 보호자가 지운 시각.
+   *
+   * 간병 기록(매칭·노쇼·후기)이 남아 있는 환자는 행을 지우지 않고 이름과 건강 정보만 지운다.
+   * 행째 지우면 기록이 함께 사라져, 환자 한 명을 지우는 것으로 간병인이 받은 후기와 노쇼
+   * 기록까지 없앨 수 있기 때문이다. 이 값이 있는 환자는 보호자 목록에 나오지 않는다.
+   */
+  deletedAt?: string;
 };
 
 /** 출생연도로 나이를 계산한다. 저장하지 않고 화면에서 그때그때 구한다. */
@@ -171,8 +179,16 @@ export type PatientSummary = {
  *
  * 보호자를 가리키는 값(guardianId)과 환자 식별자(patientId)는 들어 있지 않다.
  * 간병인은 "누가 올렸는지"가 아니라 "어떤 간병인지"만 보고 수락 여부를 정한다.
+ *
+ * 요청 원문은 이 요청을 수락한 간병인에게만 들어 있다. 원문은 보호자가 자유롭게 적은 글이라
+ * 이름·병원·연락처가 섞일 수 있어서, 수락 전에는 고른 조건과 환자 요약으로 판단하게 한다.
+ * AI 가 정리한 결과도 같은 이유로 간병인에게는 내려가지 않는다.
  */
-export type CaregiverCareRequest = Omit<CareRequest, 'guardianId' | 'patientId'> & {
+export type CaregiverCareRequest = Omit<
+  CareRequest,
+  'guardianId' | 'patientId' | 'requestText' | 'aiConditions' | 'aiAnalyzedAt'
+> & {
+  requestText?: string;
   patient: PatientSummary;
 };
 
@@ -389,10 +405,12 @@ export type MatchedPatient = PatientSummary & {
   careNotes?: string;
 };
 
-/** 매칭 화면이 쓰는 간병 조건. 요청 행에서 그대로 가져온다. */
+/**
+ * 매칭 화면이 쓰는 간병 조건. 요청 행에서 그대로 가져온다.
+ * 요청 원문은 보호자 자신에게는 언제나, 간병인에게는 연락처가 열려 있는 동안만 들어 있다.
+ */
 export type MatchCareSummary = Pick<
   CareRequest,
-  | 'requestText'
   | 'careType'
   | 'region'
   | 'startDate'
@@ -401,7 +419,9 @@ export type MatchCareSummary = Pick<
   | 'dailyEndTime'
   | 'requiredSkills'
   | 'budgetPerDay'
->;
+> & {
+  requestText?: string;
+};
 
 /**
  * 매칭 한 건.

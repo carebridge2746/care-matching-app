@@ -9,6 +9,44 @@
  * 화면에서 가리면 가려지지 않은 값이 이미 기기까지 내려온 뒤다.
  */
 
+import type { Match } from '@/types';
+
+/**
+ * 끝난 간병의 연락처를 열어 두는 기간(일).
+ *
+ * 마무리 연락과 재의뢰를 할 여유를 두고, 그 뒤로는 취소된 매칭처럼 상대 이름과 연락처,
+ * 환자 특이사항, 요청 원문을 다시 가린다. Supabase 쪽 match_details 뷰(schema.sql 69)와
+ * 같은 값이어야 한다.
+ */
+export const ContactRetentionDays = 30;
+
+const DayMs = 24 * 60 * 60 * 1000;
+
+/**
+ * 이 매칭에서 상대의 연락처와 환자 특이사항을 볼 수 있는지.
+ *
+ * 성사되지 않은 매칭(취소·노쇼)은 닫혀 있고, 끝난 간병은 종료 뒤 ContactRetentionDays 동안만 열려 있다.
+ * 자기 자신의 자료는 이 판정과 무관하게 언제나 보인다 — 그 구분은 부르는 쪽이 한다.
+ */
+export function isContactOpen(
+  match: Pick<Match, 'status' | 'completedAt'>,
+  now: Date = new Date()
+): boolean {
+  if (match.status === 'cancelled' || match.status === 'noShow') {
+    return false;
+  }
+  if (match.status === 'completed' && match.completedAt) {
+    return now.getTime() < new Date(match.completedAt).getTime() + ContactRetentionDays * DayMs;
+  }
+  return true;
+}
+
+/**
+ * 간병 기록이 남아 있어 행을 지우지 않고 익명화한 환자의 이름.
+ * Supabase 쪽 remove_patient()(schema.sql 67)가 같은 문자열을 적는다.
+ */
+export const AnonymizedPatientName = '삭제된 환자';
+
 /** '김영희' → '김OO'. 한 글자 이름은 그대로 둔다. */
 export function maskPersonName(name: string): string {
   const trimmed = name.trim();

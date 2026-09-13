@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import { toApiErrorMessage } from '@/api/api-error';
 import { patientsApi, type PatientInput } from '@/api/patients';
+import type { PatientRemoval } from '@/api/patients.types';
 import type { Patient } from '@/types';
 
 type PatientsState = {
@@ -14,7 +15,8 @@ type PatientsState = {
   load: (guardianId: string) => Promise<void>;
   create: (guardianId: string, input: PatientInput) => Promise<Patient | null>;
   update: (id: string, input: PatientInput) => Promise<Patient | null>;
-  remove: (id: string) => Promise<boolean>;
+  /** 지웠으면 그 방식(행째 지움·익명화)을, 실패하면 null 을 돌려준다 */
+  remove: (id: string) => Promise<PatientRemoval | null>;
   clearError: () => void;
 };
 
@@ -82,15 +84,16 @@ export const usePatientsStore = create<PatientsState>((set, get) => ({
   remove: async (id) => {
     set({ isSubmitting: true, errorMessage: null });
     try {
-      await patientsApi.remove(id);
+      const removal = await patientsApi.remove(id);
+      // 익명화한 환자도 목록에서는 빠진다
       set((state) => ({
         patients: state.patients.filter((item) => item.id !== id),
         isSubmitting: false,
       }));
-      return true;
+      return removal;
     } catch (error) {
       set({ errorMessage: toApiErrorMessage(error), isSubmitting: false });
-      return false;
+      return null;
     }
   },
 

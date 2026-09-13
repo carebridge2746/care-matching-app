@@ -25,7 +25,8 @@ export type CaregiverRequestCardProps = {
  * 간병인 화면의 요청 한 건.
  *
  * 목록에서 스크롤하며 훑는 카드이므로, 수락 여부를 가르는 값
- * (누구를 · 어디서 · 언제 · 얼마에)을 먼저 보여 주고 원문은 두 줄만 미리 보여 준다.
+ * (누구를 · 어디서 · 언제 · 얼마에)을 먼저 보여 준다.
+ * 보호자가 적은 원문은 수락한 뒤에만 내려오므로, 있을 때만 두 줄 미리 보여 준다.
  */
 export function CaregiverRequestCard({
   request,
@@ -57,9 +58,11 @@ export function CaregiverRequestCard({
         </AppText>
       ) : null}
 
-      <AppText variant="body" numberOfLines={2}>
-        {request.requestText}
-      </AppText>
+      {request.requestText ? (
+        <AppText variant="body" numberOfLines={2}>
+          {request.requestText}
+        </AppText>
+      ) : null}
 
       <AppText variant="label" tone="brand">
         {request.budgetPerDay !== undefined

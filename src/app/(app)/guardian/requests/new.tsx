@@ -282,7 +282,7 @@ export default function CareRequestNewScreen() {
           }}
           placeholder="어머니가 고관절 수술을 받으셔서 3주 정도 병원에서 도와주실 분이 필요합니다. 혼자 일어나기 어려우시고 식사 보조가 필요합니다."
           error={errors.requestText}
-          helperText="평소 말하듯 적어 주세요. 아래 버튼을 누르면 AI가 비어 있는 조건을 채워 드립니다."
+          helperText="평소 말하듯 적어 주세요. 이 글은 요청을 수락한 간병인에게만 보입니다. 아래 버튼을 누르면 AI가 비어 있는 조건을 채워 드립니다."
           multiline
         />
         <AppButton

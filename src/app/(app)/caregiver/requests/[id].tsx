@@ -206,7 +206,14 @@ export default function CareRequestDetailScreen() {
 
       <Card>
         <AppText variant="heading">보호자가 적은 요청</AppText>
-        <AppText variant="body">{request.requestText}</AppText>
+        {/* 원문에는 이름·병원·연락처가 섞일 수 있어 수락한 간병인에게만 내려온다 */}
+        {request.requestText ? (
+          <AppText variant="body">{request.requestText}</AppText>
+        ) : (
+          <AppText variant="body" tone="secondary">
+            보호자가 적은 원문은 수락한 뒤에 보입니다. 아래 간병 조건과 환자 상태로 판단해 주세요.
+          </AppText>
+        )}
       </Card>
 
       <Card>
