@@ -2,6 +2,8 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // TypeScript 6 부터 types 기본값이 빈 목록이라 테스트 전역(describe, expect)을 직접 적는다
+    "types": ["jest"],
     "paths": {
       "@/*": [
         "./src/*"
