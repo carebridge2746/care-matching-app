@@ -102,8 +102,9 @@ describe('GuardianArrivalStatus', () => {
     });
     render(<GuardianArrivalStatus match={match} sharing={moving} now={now} />);
 
-    // 판단 배지와 상태 문장이 이동 중일 때만 같은 말을 한다
-    expect(screen.getAllByText('이동 중')).toHaveLength(2);
+    // 판단 배지는 '이동 중', 상태 문장은 같은 말을 되풀이하지 않는다
+    expect(screen.getByText('이동 중')).toBeOnTheScreen();
+    expect(screen.getByText('약속 장소로 이동하고 있습니다')).toBeOnTheScreen();
     expect(screen.getByText(/예상 도착 09:40 · 마지막 업데이트 09:00/)).toBeOnTheScreen();
     expect(screen.getByText(/정확한 위치가 아니라/)).toBeOnTheScreen();
   });

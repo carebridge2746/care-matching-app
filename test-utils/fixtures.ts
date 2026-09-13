@@ -42,9 +42,40 @@ export async function seedPatient(input: Partial<PatientInput> = {}): Promise<Pa
 }
 
 /**
+ * 지금 시각을 고정한다. 시작 시각 규칙처럼 "지금 몇 시인가"에 따라 답이 달라지는 테스트에서 쓴다.
+ * Date 만 바꾸고 타이머는 그대로 둔다 — Mock 인증의 지연(setTimeout)이 멈추면 테스트가 끝나지 않는다.
+ * 테스트가 끝나면 restoreClock() 으로 되돌린다.
+ */
+export function setClock(now: Date): void {
+  jest.useFakeTimers({
+    now,
+    doNotFake: [
+      'hrtime',
+      'nextTick',
+      'performance',
+      'queueMicrotask',
+      'requestAnimationFrame',
+      'cancelAnimationFrame',
+      'requestIdleCallback',
+      'cancelIdleCallback',
+      'setImmediate',
+      'clearImmediate',
+      'setInterval',
+      'clearInterval',
+      'setTimeout',
+      'clearTimeout',
+    ],
+  });
+}
+
+export function restoreClock(): void {
+  jest.useRealTimers();
+}
+
+/**
  * 환자를 따로 넘기지 않으면 새 환자를 만들어 붙인다.
- * 시작일 기본값은 오늘이다 — 시작일 전에는 간병을 시작할 수 없어서, 진행 흐름을 보는 테스트가
- * 날짜를 따로 적지 않아도 되게 한다.
+ * 시작일 기본값은 어제(시각을 적지 않았으니 어제 오전 9시)다 — 간병 시작과 노쇼 신고는 약속한
+ * 시각을 기준으로 열리므로, 진행 흐름을 보는 테스트가 돌리는 시각에 따라 답이 달라지지 않게 한다.
  */
 export async function seedRequest(input: Partial<CareRequestInput> = {}): Promise<CareRequest> {
   const patientId = input.patientId ?? (await seedPatient()).id;
@@ -53,7 +84,7 @@ export async function seedRequest(input: Partial<CareRequestInput> = {}): Promis
     requestText: '어머니 병원 간병을 부탁드립니다. 치매가 있으십니다.',
     careType: 'hospital',
     region: '서울 강남구',
-    startDate: daysFromToday(0),
+    startDate: daysFromToday(-1),
     requiredSkills: ['식사 보조'],
     preferredCaregiverGender: 'any',
     ...input,

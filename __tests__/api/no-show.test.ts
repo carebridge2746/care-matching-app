@@ -10,8 +10,12 @@ import {
   Guardian,
   HomeCaregiver,
   NewCaregiver,
+  restoreClock,
   seedRequest,
+  setClock,
 } from '../../test-utils/fixtures';
+
+afterEach(restoreClock);
 
 async function candidateIds(requestId: string): Promise<string[]> {
   return (await matching.listCandidates(requestId)).map((item) => item.id);
@@ -56,14 +60,23 @@ describe('노쇼 신고 (Phase 10)', () => {
     expect(await candidateIds(another.id)).toContain(Caregiver);
   });
 
-  it('아직 오지 않은 날짜는 신고할 수 없고, 시작일 당일부터 신고할 수 있다', async () => {
+  it('약속한 시작 시각 전에는 신고할 수 없고, 시각이 지나면 당일에도 신고할 수 있다', async () => {
     const future = await seedRequest({ startDate: daysFromToday(3) });
     const futureMatch = await acceptRequest(future.id);
     await expect(history.reportNoShow(futureMatch.id, Guardian)).rejects.toMatchObject({ code: 'invalid_state' });
 
-    const todays = await seedRequest({ startDate: daysFromToday(0) });
-    const todayMatch = await acceptRequest(todays.id);
-    expect((await history.reportNoShow(todayMatch.id, Guardian)).status).toBe('noShow');
+    // 2026-09-14 17:00 에 시작하는 저녁 간병
+    const evening = await seedRequest({ startDate: '2026-09-14', dailyStartTime: '17:00', dailyEndTime: '21:00' });
+    const eveningMatch = await acceptRequest(evening.id);
+
+    setClock(new Date(2026, 8, 14, 16, 59));
+    await expect(history.reportNoShow(eveningMatch.id, Guardian)).rejects.toMatchObject({
+      code: 'invalid_state',
+      message: expect.stringContaining('17:00'),
+    });
+
+    setClock(new Date(2026, 8, 14, 17, 0));
+    expect((await history.reportNoShow(eveningMatch.id, Guardian)).status).toBe('noShow');
   });
 
   it('보호자만, 당사자만, 시작하지 않은 간병만 신고할 수 있다', async () => {

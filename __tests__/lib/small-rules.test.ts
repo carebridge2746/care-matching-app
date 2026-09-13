@@ -29,6 +29,9 @@ describe('개인정보 가리기', () => {
     ['남궁민수', '남OOO'],
     ['  이미영 ', '이OO'],
     ['김', '김'],
+    // 사람 이름이 아닌 자리 문구는 가리지 않는다 — '삭OOOO'는 사람 이름으로 읽힌다
+    ['삭제된 환자', '삭제된 환자'],
+    ['탈퇴한 사용자', '탈퇴한 사용자'],
   ])('%j → %s', (name, expected) => {
     expect(maskPersonName(name)).toBe(expected);
   });
@@ -54,9 +57,20 @@ describe('연락처를 열어 두는 기간', () => {
 describe('노쇼 판정', () => {
   const Today = '2026-09-14';
 
-  function match(status: MatchStatus, startDate: string, requestId = 'request-1'): CareMatch {
-    return { status, requestId, care: { startDate } } as unknown as CareMatch;
+  function match(
+    status: MatchStatus,
+    startDate: string,
+    requestId = 'request-1',
+    dailyStartTime?: string
+  ): CareMatch {
+    return { status, requestId, care: { startDate, dailyStartTime } } as unknown as CareMatch;
   }
+
+  const at = (hhmm: string, day = Today) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    const [y, mo, d] = day.split('-').map(Number);
+    return new Date(y!, mo! - 1, d!, h, m);
+  };
 
   it('시작일이 지났는데 시작되지 않은 간병만 확인 대상이다', () => {
     expect(isMatchOverdue(match('accepted', '2026-09-13'), Today)).toBe(true);
@@ -64,10 +78,17 @@ describe('노쇼 판정', () => {
     expect(isMatchOverdue(match('inProgress', '2026-09-13'), Today)).toBe(false);
   });
 
-  it('신고는 시작일 당일부터 — 가장 급한 날에 아무것도 못 하면 안 된다', () => {
-    expect(canReportNoShow(match('accepted', '2026-09-15'), Today)).toBe(false);
-    expect(canReportNoShow(match('accepted', Today), Today)).toBe(true);
-    expect(canReportNoShow(match('inProgress', Today), Today)).toBe(false);
+  it('신고는 약속한 시작 시각부터 — 당일이라도 시각 전에는 받지 않는다', () => {
+    const evening = match('accepted', Today, 'request-1', '17:00');
+    expect(canReportNoShow(evening, at('16:59'))).toBe(false);
+    expect(canReportNoShow(evening, at('17:00'))).toBe(true);
+
+    // 시각을 적지 않은 요청은 오전 9시로 본다
+    expect(canReportNoShow(match('accepted', Today), at('08:59'))).toBe(false);
+    expect(canReportNoShow(match('accepted', Today), at('09:00'))).toBe(true);
+
+    expect(canReportNoShow(match('accepted', '2026-09-15'), at('23:59'))).toBe(false);
+    expect(canReportNoShow(match('inProgress', Today), at('12:00'))).toBe(false);
   });
 
   it('확인 대상 모으기와 요청별 노쇼 건수', () => {

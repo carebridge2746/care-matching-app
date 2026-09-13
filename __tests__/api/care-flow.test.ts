@@ -3,6 +3,9 @@ import { mockMatchHistoryAdapter as history } from '@/api/match-history.mock';
 import { mockMatchingAdapter as matching } from '@/api/matching.mock';
 import { loadMatches, loadPatients, saveMatches } from '@/api/mock-store';
 import { mockPatientsAdapter as patients } from '@/api/patients.mock';
+import { DemoTrainingCourses } from '@/api/training.demo';
+import { mockTrainingAdapter as training } from '@/api/training.mock';
+import { scoreMatch } from '@/lib/matching';
 import { ContactRetentionDays } from '@/lib/privacy';
 import type { AiCareConditions } from '@/types';
 
@@ -14,9 +17,13 @@ import {
   Guardian,
   HomeCaregiver,
   NewCaregiver,
+  restoreClock,
   seedPatient,
   seedRequest,
+  setClock,
 } from '../../test-utils/fixtures';
+
+afterEach(restoreClock);
 
 async function requestOf(requestId: string) {
   return (await requests.list(Guardian)).find((item) => item.id === requestId);
@@ -185,6 +192,20 @@ describe('간병 진행 (Phase 7)', () => {
     expect((await findMatch(request.id, Caregiver)).status).toBe('accepted');
   });
 
+  it('당일이라도 시작 3시간 전까지는 시작할 수 없다 — 저녁 간병을 아침에 시작해 두지 않게', async () => {
+    const request = await seedRequest({ startDate: '2026-09-14', dailyStartTime: '17:00', dailyEndTime: '21:00' });
+    const match = await acceptRequest(request.id);
+
+    setClock(new Date(2026, 8, 14, 13, 59));
+    await expect(history.start(match.id, Caregiver)).rejects.toMatchObject({
+      code: 'invalid_state',
+      message: expect.stringContaining('14:00부터'),
+    });
+
+    setClock(new Date(2026, 8, 14, 14, 0));
+    expect((await history.start(match.id, Caregiver)).status).toBe('inProgress');
+  });
+
   it('수락 → 시작 → 종료 순서로만 옮겨 가고, 요청 상태도 함께 따라간다', async () => {
     const request = await seedRequest();
     const match = await acceptRequest(request.id);
@@ -290,6 +311,24 @@ describe('추천 후보 (Phase 6)', () => {
     await acceptRequest(request.id);
 
     expect((await matching.listCandidates(request.id)).map((item) => item.id)).not.toContain(Caregiver);
+  });
+
+  it('앱에서 수료한 교육을 함께 내보내고, 점수에도 조금 반영된다', async () => {
+    const request = await seedRequest();
+    const course = DemoTrainingCourses[0]!;
+    await training.submitQuiz(
+      course.id,
+      Caregiver,
+      course.questions.map((question) => ({ questionId: question.id, choiceIndex: question.answerIndex }))
+    );
+
+    const candidate = (await matching.listCandidates(request.id)).find((item) => item.id === Caregiver);
+    expect(candidate?.completedTrainings).toEqual([course.title]);
+    expect(scoreMatch(candidate!, request).items.find((item) => item.label === '교육 수료')?.score).toBe(2.5);
+
+    // 수료하지 않은 과정은 세지 않는다
+    const other = (await matching.listCandidates(request.id)).find((item) => item.id !== Caregiver);
+    expect(other?.completedTrainings ?? []).toEqual([]);
   });
 
   it('없는 요청은 not_found', async () => {

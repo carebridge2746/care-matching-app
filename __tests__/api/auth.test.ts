@@ -1,5 +1,21 @@
-import { mockAuthAdapter as auth } from '@/api/auth.mock';
+import { DemoPassword, mockAuthAdapter as auth } from '@/api/auth.mock';
 import type { SignUpInput } from '@/api/auth.types';
+import { readAllMockCaregiverProfiles } from '@/api/caregiver.mock';
+import { mockMatchHistoryAdapter as history } from '@/api/match-history.mock';
+import { mockMatchingAdapter as matching } from '@/api/matching.mock';
+import { loadCareRequests, loadMatches, loadPatients } from '@/api/mock-store';
+import { AnonymizedPatientName, WithdrawnRequestText, WithdrawnUserName } from '@/lib/privacy';
+
+import {
+  acceptRequest,
+  Admin,
+  Caregiver,
+  findMatch,
+  Guardian,
+  seedCompletedMatch,
+  seedPatient,
+  seedRequest,
+} from '../../test-utils/fixtures';
 
 const input: SignUpInput = {
   email: 'new.guardian@care.test',
@@ -48,5 +64,74 @@ describe('Mock 인증', () => {
 
     const user = await auth.signIn({ email: input.email, password: input.password });
     expect(user.name).toBe('정하늘');
+  });
+});
+
+describe('탈퇴', () => {
+  it('예정되었거나 진행 중인 간병이 있으면 보호자도 간병인도 탈퇴할 수 없다', async () => {
+    const request = await seedRequest();
+    const match = await acceptRequest(request.id);
+
+    await expect(auth.withdraw(Guardian)).rejects.toMatchObject({ code: 'withdrawal_blocked' });
+    await expect(auth.withdraw(Caregiver)).rejects.toMatchObject({ code: 'withdrawal_blocked' });
+
+    await history.start(match.id, Caregiver);
+    await expect(auth.withdraw(Guardian)).rejects.toMatchObject({ code: 'withdrawal_blocked' });
+  });
+
+  it('관리자 계정은 앱에서 탈퇴할 수 없다 — 조치 기록의 주인이다', async () => {
+    await expect(auth.withdraw(Admin)).rejects.toMatchObject({ code: 'withdrawal_blocked' });
+  });
+
+  it('보호자가 탈퇴하면 개인정보는 지우고, 간병 기록은 탈퇴한 사용자로 남긴다', async () => {
+    await auth.signIn({ email: 'guardian@care.test', password: DemoPassword });
+    const done = await seedCompletedMatch();
+    // 기록이 없는 환자와 요청
+    const untouchedPatient = await seedPatient({ name: '박말순' });
+    await seedRequest({ patientId: untouchedPatient.id });
+
+    await auth.withdraw(Guardian);
+
+    // 로그인이 풀리고 다시 들어올 수 없다
+    expect(await auth.getCurrentUser()).toBeNull();
+    await expect(auth.signIn({ email: 'guardian@care.test', password: DemoPassword })).rejects.toMatchObject({
+      code: 'invalid_credentials',
+    });
+
+    // 기록이 없는 요청·환자는 지우고, 기록이 있는 요청은 원문을, 환자는 이름과 건강 정보를 지운다
+    const storedRequests = await loadCareRequests();
+    expect(storedRequests.map((item) => item.id)).toEqual([done.requestId]);
+    expect(storedRequests[0]?.requestText).toBe(WithdrawnRequestText);
+
+    const storedPatients = await loadPatients();
+    expect(storedPatients).toHaveLength(1);
+    expect(storedPatients[0]).toMatchObject({ name: AnonymizedPatientName, conditions: [] });
+    expect(storedPatients[0]).not.toHaveProperty('careNotes');
+
+    // 매칭 기록은 남고, 간병인에게는 '탈퇴한 사용자'로 보인다 — 가리지도 연락처를 남기지도 않는다
+    expect(await loadMatches()).toHaveLength(1);
+    const caregiverView = await findMatch(done.requestId, Caregiver, Caregiver);
+    expect(caregiverView.guardian).toEqual({ name: WithdrawnUserName });
+    expect(caregiverView.patient.name).toBe(AnonymizedPatientName);
+  });
+
+  it('같은 이메일로 다시 가입할 수 있지만 이전 계정과 이어지지 않는다', async () => {
+    await auth.withdraw(Guardian);
+
+    const user = await auth.signUp({ email: 'guardian@care.test', password: 'password123', name: '김영희', role: 'guardian' });
+    expect(user.id).not.toBe(Guardian);
+    await expect(auth.withdraw(Guardian)).rejects.toMatchObject({ code: 'invalid_credentials' });
+  });
+
+  it('간병인이 탈퇴하면 추천에서 빠지고 자기소개가 지워진다', async () => {
+    const request = await seedRequest();
+    expect((await matching.listCandidates(request.id)).map((item) => item.id)).toContain(Caregiver);
+
+    await auth.withdraw(Caregiver);
+
+    expect((await matching.listCandidates(request.id)).map((item) => item.id)).not.toContain(Caregiver);
+    const profile = (await readAllMockCaregiverProfiles()).find((item) => item.id === Caregiver);
+    expect(profile).toBeDefined();
+    expect(profile).not.toHaveProperty('introduction');
   });
 });

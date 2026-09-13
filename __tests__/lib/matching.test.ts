@@ -1,4 +1,5 @@
 import {
+  completedTrainingTitles,
   MatchWeights,
   rankRequestsForCaregiver,
   scoreMatch,
@@ -23,6 +24,7 @@ const caregiver: MatchCaregiverConditions = {
   regions: ['서울 강남구'],
   minDailyWage: 120000,
   availability: weekdayDaytime,
+  completedTrainings: ['치매 어르신 돌봄 기초', '응급 상황 대처와 심폐소생술'],
 };
 
 // 2026-09-14 는 월요일, 2026-09-18 은 금요일이다
@@ -132,13 +134,37 @@ describe('scoreMatch', () => {
 
   it('경력은 5년에서 만점이 되고 더 벌어지지 않는다', () => {
     expect(itemScore(scoreMatch({ ...caregiver, yearsOfExperience: 0 }, request), '경력')).toBe(0);
-    expect(itemScore(scoreMatch({ ...caregiver, yearsOfExperience: 2 }, request), '경력')).toBe(4);
-    expect(itemScore(scoreMatch({ ...caregiver, yearsOfExperience: 20 }, request), '경력')).toBe(10);
+    expect(itemScore(scoreMatch({ ...caregiver, yearsOfExperience: 2 }, request), '경력')).toBe(2.8);
+    expect(itemScore(scoreMatch({ ...caregiver, yearsOfExperience: 20 }, request), '경력')).toBe(7);
   });
 
   it('자격은 하나면 60%, 둘 이상이면 만점', () => {
     expect(itemScore(scoreMatch({ ...caregiver, certifications: [] }, request), '자격')).toBe(0);
-    expect(itemScore(scoreMatch({ ...caregiver, certifications: ['요양보호사'] }, request), '자격')).toBe(3);
+    expect(itemScore(scoreMatch({ ...caregiver, certifications: ['요양보호사'] }, request), '자격')).toBe(1.8);
+  });
+
+  describe('교육 수료', () => {
+    it('앱에서 수료한 교육은 두 개에서 만점, 더 벌어지지 않는다', () => {
+      expect(itemScore(scoreMatch({ ...caregiver, completedTrainings: [] }, request), '교육 수료')).toBe(0);
+      expect(itemScore(scoreMatch({ ...caregiver, completedTrainings: ['치매 어르신 돌봄 기초'] }, request), '교육 수료')).toBe(2.5);
+      expect(
+        itemScore(scoreMatch({ ...caregiver, completedTrainings: ['가', '나', '다'] }, request), '교육 수료')
+      ).toBe(5);
+    });
+
+    it('작게만 반영한다 — 교육을 안 들은 사람도 다른 조건이 모두 맞으면 95점이다', () => {
+      expect(scoreMatch({ ...caregiver, completedTrainings: [] }, request).total).toBe(95);
+    });
+
+    it('수료 기록은 과정 이름으로 바꾸고, 없어진 과정은 세지 않는다', () => {
+      const courses = [
+        { id: 'course-1', title: '치매 어르신 돌봄 기초' },
+        { id: 'course-2', title: '응급 상황 대처와 심폐소생술' },
+      ];
+      expect(completedTrainingTitles(courses, [{ courseId: 'course-2' }, { courseId: 'gone' }])).toEqual([
+        '응급 상황 대처와 심폐소생술',
+      ]);
+    });
   });
 });
 
