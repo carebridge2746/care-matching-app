@@ -54,20 +54,21 @@ Supabase Edge Function의 secret으로만 설정합니다.
 ```
 src/
 ├── api/          # 백엔드 어댑터. 진입점(auth · patients · care-requests · caregiver ·
-│                 #   matching · match-history · reviews · training · llm)마다
+│                 #   matching · match-history · reviews · training · admin · llm)마다
 │                 #   .mock.ts / .supabase.ts 두 구현을 두고 mode.ts 로 고른다
 ├── app/          # expo-router 라우트 (화면)
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
 │   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
 │   └── (app)/        # 로그인 전용 — guardian / caregiver / admin
 │       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성) · matches(간병 진행)
-│       └── caregiver/ #   홈 · profile · availability · requests(목록·상세·수락) ·
-│                      #   accepted(수락한 간병과 진행 상황) · training(교육·퀴즈·수료)
+│       ├── caregiver/ #   홈 · profile · availability · requests(목록·상세·수락) ·
+│       │              #   accepted(수락한 간병과 진행 상황) · training(교육·퀴즈·수료)
+│       └── admin/     #   홈 · reports(후기 신고) · matches(확인이 필요한 매칭) · actions(조치 기록)
 ├── components/
+│   ├── admin/    # 신고 큐 카드, 분쟁 매칭 카드, 조치 확인 폼, 조치 기록 한 줄
 │   ├── auth/     # 회원가입 유형 선택 카드
 │   ├── care/     # 간병 요청 카드 등 간병 도메인 UI
 │   ├── common/   # 화면 전반에서 재사용하는 UI (AppText, AppButton, Card, Screen, TextField 등)
-│   ├── home/     # 유형별 홈 화면의 공통 골격
 │   └── training/ # 교육 과정 카드, 단원, 퀴즈와 채점 결과
 ├── lib/          # 라우트 매핑, 입력 검증, 날짜·가능 시간 처리, 매칭 점수 계산,
 │                 #   개인정보 가리기, 공통 선택지 목록, 교육 진행 상황, 노쇼 판정,
@@ -108,13 +109,16 @@ Edge Function은 앱과 다른 런타임(Deno)에서 돌아가므로 `tsconfig.j
 | `/guardian/requests/[id]` | 보호자 | 요청 상세와 추천 간병인, 진행 중인 간병 |
 | `/guardian/matches` | 보호자 | 간병 진행 상황, 노쇼 신고, 지난 간병 이력 |
 | `/caregiver` | 간병인 | 간병인 홈 |
-| `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정, 받은 평가와 후기, 수료한 교육 |
+| `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정, 받은 평가와 후기(신고), 수료한 교육 |
 | `/caregiver/availability` | 간병인 | 근무 가능 요일·시간대 설정 |
 | `/caregiver/requests` | 간병인 | 대기 중인 간병 요청 목록 |
 | `/caregiver/accepted` | 간병인 | 수락한 간병과 진행 상황(시작·종료·취소) |
 | `/caregiver/training` | 간병인 | 교육 과정 목록과 수료 현황 |
 | `/caregiver/training/[id]` | 간병인 | 교육 내용 · 퀴즈 · 채점 결과 |
-| `/admin` | 관리자 | 관리자 홈 |
+| `/admin` | 관리자 | 관리자 홈 — 처리를 기다리는 신고와 매칭 건수 |
+| `/admin/reports` | 관리자 | 후기 신고 큐. 후기 삭제·복구, 신고 반려 |
+| `/admin/matches` | 관리자 | 노쇼 신고된 매칭과 종료일이 지난 매칭. 노쇼 취소, 강제 종료 |
+| `/admin/actions` | 관리자 | 관리자가 한 조치의 기록 (읽기 전용) |
 
 접근 제어는 `expo-router`의 `Stack.Protected` guard로만 처리합니다.
 화면에서 `router.replace`로 이동을 강제하지 않으므로, 웹 주소를 직접 입력하거나
@@ -589,8 +593,8 @@ Mock 모드가 읽는 사본은 `src/api/training.demo.ts` 에 같은 식별자�
 수도 있습니다.
 
 신고는 되돌릴 수 없습니다. 상대의 기록에 남는 판정이라 조용히 사라지면 안 되기 때문입니다 —
-후기를 고치거나 지울 수 없게 둔 것과 같은 이유입니다. 잘못된 신고의 이의 제기와 취소는
-Phase 11(관리자)에서 별도 창구로 다룹니다.
+후기를 고치거나 지울 수 없게 둔 것과 같은 이유입니다. 잘못된 신고는 관리자가 되돌립니다 —
+아래 'Phase 11' 절을 보세요.
 
 ### 화면
 
@@ -603,6 +607,95 @@ Phase 11(관리자)에서 별도 창구로 다룹니다.
 노쇼 신고 버튼은 취소 버튼과 같은 줄에 두지 않았습니다. 나란히 두면 취소하려다 잘못 누르기
 쉬운데, 신고는 되돌릴 수 없습니다. 신고 화면은 누르기 전에 "연락이 닿는지 먼저 확인해
 주세요"를 먼저 말합니다 — 늦는 것과 오지 않는 것은 다릅니다.
+
+## 관리자 창구 (Phase 11)
+
+```
+당사자가 후기를 신고 → 관리자가 확인 → 삭제(되돌릴 수 있음) 또는 반려 → 모든 조치가 기록으로 남음
+보호자가 노쇼를 신고 → 잘못된 신고면 관리자가 되돌림
+```
+
+후기는 고치거나 지울 수 없고(Phase 8), 노쇼 신고도 되돌릴 수 없습니다(Phase 10). 둘 다 상대의
+기록에 남는 판정이라 당사자가 조용히 바꿀 수 있으면 안 되기 때문입니다. 대신 **예외를 여는
+창구를 관리자 한 곳에만** 두었습니다.
+
+### 먼저 막은 구멍 — 스스로 관리자가 되기
+
+"본인 프로필 수정" 정책은 자기 행 전체를 열어 둡니다. RLS는 행만 가리고 컬럼은 가리지 못하므로,
+로그인한 누구나 `update profiles set role = 'admin'` 한 줄로 관리자가 될 수 있었습니다.
+관리자 창구를 열기 전에 트리거로 `role` 변경을 막았습니다. 운영자가 SQL 편집기에서 직접
+바꾸는 길(`auth.uid()` 가 없는 경로)만 남아 있습니다.
+
+### 후기는 지우지 않고 지운 표시만 합니다
+
+행을 실제로 지우면 두 가지가 무너집니다. "매칭당 한 번"이라는 제약이 풀려 **지운 뒤 다시 쓰는
+것으로 후기 수정이 우회되고**, 무엇이 문제였는지 분쟁 기록도 함께 사라집니다.
+
+| 규칙 | 지키는 곳 |
+| --- | --- |
+| 지운 후기는 평균과 목록에서 빠진다 | `user_ratings` · `public_reviews()` · `recommendation_candidates()` 세 곳 모두 |
+| 지운 후기의 작성자는 같은 간병에 다시 쓸 수 없다 | `create_review()` — 지운 후기도 센다 |
+| 작성자에게는 지워진 사실이 보인다 | `/guardian/matches` · `/caregiver/accepted` 의 카드 |
+| 지우면 그 후기의 열린 신고가 모두 마감된다 | `admin_delete_review()` |
+| 되돌리면 그때 마감한 신고는 반려로 바뀐다 | `admin_restore_review()` |
+
+삭제를 되돌릴 수 있게 한 것은 일부러입니다. 되돌릴 길이 없으면 관리자가 지우기를 망설이게 되고,
+그러면 창구가 있으나 마나입니다.
+
+### 신고는 당사자만 합니다
+
+신고할 수 있는 사람은 후기를 쓴 사람과 받은 사람 둘뿐입니다. 남의 프로필을 훑던 제3자에게까지
+열면 큐가 "마음에 들지 않는 후기"로 채워지고, 정작 피해를 입은 사람의 신고가 묻힙니다.
+작성자에게도 열어 둔 것은 잘못 쓴 후기를 스스로 지울 수 없게 한 대신입니다.
+
+신고한 사람에게는 처리 결과(확인 중 · 삭제됨 · 반려됨)가 보이지만, **신고당한 작성자에게는
+알리지 않습니다.** 반려된 신고까지 알리면 신고가 곧 시비가 됩니다.
+
+### 노쇼를 되돌려도 수락 상태로 돌아가지 않습니다
+
+신고와 동시에 요청이 다시 열렸고, 그 사이 다른 간병인이 수락했을 수 있습니다. 되돌린 매칭을
+수락으로 살리면 한 요청에 살아 있는 매칭이 둘이 됩니다. 그래서 **취소로 남기고 끊은 쪽에
+관리자를 적습니다.** 그 간병인은 같은 요청을 다시 수락할 수 있고 추천에도 다시 나옵니다.
+
+끊은 쪽이 관리자일 수 있게 되면서 `Match.cancelledBy` 에 `'admin'` 을 더했습니다. 전에는
+간병인이 아니면 보호자로 읽어서, 관리자가 끊은 매칭이 "보호자가 취소"로 보였을 것입니다.
+
+### 관리자가 보는 범위를 좁혔습니다
+
+사용자 목록이나 전체 매칭을 훑는 화면은 두지 않았습니다. 열어 두면 남의 간병 내용을 아무 때나
+읽는 자리가 됩니다. 관리자에게 보이는 것은 **누군가 문제를 제기한 건**뿐입니다 — 신고된 후기,
+노쇼로 신고된 매칭, 끝날 날이 지났는데 아무도 종료하지 않은 매칭. 이 목록에도 환자 정보와
+연락처는 없습니다.
+
+신고 큐에서만은 이름을 가리지 않습니다. 누가 누구에게 무엇을 썼는지 봐야 판단할 수 있기 때문입니다.
+
+### 조치는 모두 기록으로 남습니다
+
+조치한 자리에는 결과만 남고 판단은 남지 않습니다 — 노쇼를 되돌리면 노쇼였다는 사실 자체가
+매칭에서 사라지고 일반 취소와 구분되지 않습니다. 무슨 일이 있었는지는 `admin_actions` 에만
+남습니다. 앱에는 이 기록을 쓰거나 지우는 창구가 없습니다.
+
+저장소는 메모를 비워도 받지만 **화면에서는 반드시 사유를 적게 했습니다.** 사유 없는 기록은
+나중에 읽어도 왜 그랬는지 알 수 없습니다.
+
+### 화면
+
+| 화면 | 하는 일 |
+| --- | --- |
+| `/caregiver/profile` | 받은 후기마다 신고 버튼. 신고한 후기에는 처리 상태가 붙는다 |
+| `/admin` | 확인을 기다리는 신고와 매칭 건수 |
+| `/admin/reports` | 확인 중 · 후기 삭제됨 · 반려됨 탭. 오래 기다린 신고가 위로 |
+| `/admin/matches` | 노쇼 신고 취소, 종료일 지난 매칭 강제 종료 |
+| `/admin/actions` | 최근 조치 50건 |
+
+조치 버튼을 누르면 곧바로 실행하지 않고, 그 자리에 **무슨 일이 일어나는지와 사유 입력칸**을 펼칩니다.
+조치가 끝나면 목록을 고쳐 끼우지 않고 다시 불러옵니다 — 후기 하나를 지우면 같은 후기의 다른
+신고도 함께 바뀌기 때문입니다.
+
+보호자는 아직 받은 후기를 볼 화면이 없어서, 신고 버튼도 간병인 쪽 화면에만 붙어 있습니다.
+신고 자격(`report_review()`)은 보호자에게도 열려 있으므로 화면만 붙이면 됩니다.
+
+Mock 모드에서는 `admin@care.test` 로 로그인해 확인할 수 있습니다.
 
 ## AI 자연어 구조화
 
@@ -698,7 +791,8 @@ AI 없이 굴러가야 하기 때문입니다.
 ```
 profiles(보호자)  1 ──< patients(환자)  1 ──< care_requests(간병 요청)  1 ──< matches(매칭)
 profiles(간병인)  1 ──  caregiver_profiles  1 ──< caregiver_availability
-profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최대 2건)
+profiles(간병인)  1 ──< matches  1 ──< reviews(후기, 매칭당 최대 2건)  1 ──< review_reports(신고)
+profiles(관리자)  1 ──< admin_actions(조치 기록)
 
 training_courses  1 ──< training_lessons          (읽는 내용)
                   1 ──< training_quiz_questions   (푸는 문항 · 정답이 들어 있다)
@@ -714,7 +808,9 @@ training_courses  1 ──< training_lessons          (읽는 내용)
 | `caregiver_profiles` | 간병인의 성별·경력·자격·역량·간병 장소·근무 지역·희망 일당·자기소개 (`profiles`와 1:1) |
 | `caregiver_availability` | 근무 가능한 요일·시간대. 표의 칸 하나가 한 행 |
 | `matches` | 수락 이후의 간병 한 건. 상태와 수락·시작·종료·취소·노쇼 시각, 취소한 사람과 사유 |
-| `reviews` | 끝난 간병에 대한 상호 평가. 별점과 후기, 매칭당 사람마다 한 줄 |
+| `reviews` | 끝난 간병에 대한 상호 평가. 별점과 후기, 매칭당 사람마다 한 줄. 관리자가 지우면 행은 남기고 `deleted_at` 을 채운다 |
+| `review_reports` | 후기 신고. 사유·설명·처리 상태(`open`·`accepted`·`dismissed`)·처리 메모, 신고자마다 후기당 한 줄 |
+| `admin_actions` | 관리자가 한 조치. 종류·대상·메모·시각. 앱은 읽기만 하고 쓰는 것은 `admin_*()` 함수뿐이다 |
 | `training_courses` | 교육 과정. 제목·요약·소요 시간·합격 기준·수료 시 표시할 자격 이름 |
 | `training_lessons` | 과정의 단원. 본문과 '기억할 것' |
 | `training_quiz_questions` | 퀴즈 문항·보기·정답·해설. `select` 정책이 없어 앱은 읽지 못한다 |
@@ -746,7 +842,8 @@ training_courses  1 ──< training_lessons          (읽는 내용)
 | 간병인 | `patients`·`care_requests`에 직접 접근 불가 (아래 창구로만 다룬다). 본인의 `caregiver_profiles`·`caregiver_availability`는 조회/등록/수정 |
 | 당사자 두 사람 | 본인이 낀 `matches`와 자기가 쓰거나 받은 `reviews`는 **조회만**. 만들고 바꾸는 일은 함수만 할 수 있다 |
 | 로그인한 사용자 | 공개된 `training_courses`·`training_lessons` 조회. 본인의 응시·수료 기록은 **조회만** |
-| 관리자 | `patients`·`care_requests`·`matches`·`reviews` 접근 불가 |
+| 신고한 사람 | 본인이 낸 `review_reports` 만 **조회**. 신고는 `report_review()` 로만 한다 |
+| 관리자 | `profiles` 와 `admin_actions` 조회. `patients`·`care_requests`·`matches`·`reviews` 에는 테이블 권한이 없고 `admin_*()` 함수로만 다룬다 |
 
 요청 행에서 `matched_caregiver_id`·`matched_at`은 앱이 아예 쓸 수 없습니다. RLS 정책은
 "어느 행"만 정하고 "어느 컬럼"은 정하지 못하므로, 이 두 컬럼은 컬럼 권한(`grant update (...)`)으로
@@ -768,6 +865,11 @@ training_courses  1 ──< training_lessons          (읽는 내용)
 | `public.user_ratings` (뷰) · `public.public_reviews()` (함수) | 평균 별점과, 작성자를 가린 후기 목록 |
 | `public.published_courses` (뷰) · `public.course_quiz()` (함수) | 공개된 교육 과정과, 정답을 뺀 퀴즈 문항 |
 | `public.submit_quiz()` (함수) | 퀴즈를 채점하고 붙었으면 수료를 만든다. 점수는 앱이 정하지 않는다 |
+| `public.report_review()` (함수) | 후기 당사자가 후기를 신고한다. 같은 후기는 한 번만 |
+| `public.admin_review_reports()` (함수) | 신고·후기·양쪽 이름을 이어 붙인 신고 큐 (관리자용) |
+| `public.admin_delete_review()` · `admin_restore_review()` · `admin_dismiss_report()` (함수) | 후기 삭제·복구, 신고 반려. 조치마다 `admin_actions` 에 한 줄 남긴다 |
+| `public.admin_disputed_matches()` (함수) | 노쇼로 신고된 매칭과 종료일이 지난 매칭만. 환자 정보와 연락처는 없다 |
+| `public.admin_clear_no_show()` · `admin_cancel_match()` (함수) | 노쇼 신고를 되돌리고, 방치된 매칭을 끊는다 |
 
 두 창구 모두 호출한 사람이 간병인인지 `public.is_caregiver()` 로 데이터베이스가 직접 확인합니다.
 정책이나 뷰 안에서 `profiles`를 그대로 조회하면 재귀가 생기므로 `security definer` 함수로 감쌌습니다.
@@ -782,10 +884,9 @@ training_courses  1 ──< training_lessons          (읽는 내용)
 
 - Phase 6 (매칭): `recommendation_candidates()` 가 후보를 내보냅니다. 간병인이 50명을 넘어가면
   경력이 짧은 쪽부터 잘리므로, 그때는 지역으로도 걸러야 합니다.
-- Phase 11 (관리자): 관리자 조회 권한을 추가합니다. 정책 안에서 `profiles`를 다시 조회하면
-  재귀가 생기므로 JWT 클레임이나 `security definer` 함수로 역할을 판단합니다.
-  잘못된 후기와 잘못된 노쇼 신고를 되돌리는 창구도 여기서 엽니다 — 둘 다 상대의 기록에
-  남는 판정이라 당사자가 조용히 지울 수 있게 두지 않았습니다.
+- Phase 11 (관리자): 역할은 `security definer` 함수 `public.is_admin()` 으로 판단합니다 —
+  정책 안에서 `profiles`를 다시 조회하면 재귀가 생기기 때문입니다. 관리자 함수는 모두 첫 줄에서
+  이 함수를 확인하고, 관리자가 아니면 빈 결과가 아니라 오류(42501)로 거절합니다.
 
 ## 개발 진행 상황
 
@@ -801,7 +902,7 @@ training_courses  1 ──< training_lessons          (읽는 내용)
 | 8 | 후기/평가 · 신뢰도 반영 | 완료 |
 | 9 | 교육 · 퀴즈 · 수료 | 완료 |
 | 10 | 노쇼 · 대체 간병인 추천 | 완료 |
-| 11 | 관리자 기능 | 예정 |
+| 11 | 관리자 기능 · 후기 신고와 삭제 · 노쇼 되돌리기 · 조치 기록 | 완료 |
 | 12 | 전체 테스트 및 UI 개선 | 예정 |
 
 페이즈 표에 없는 항목: **AI 자연어 구조화**(Edge Function + `llm` 어댑터)는 구현을 마쳤습니다.
