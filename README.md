@@ -69,7 +69,8 @@ src/
 │   ├── index.tsx     # 진입 화면 — 로그인 상태면 유형별 홈으로 보낸다
 │   ├── (auth)/       # 비로그인 전용 — 로그인 / 회원가입
 │   └── (app)/        # 로그인 전용 — guardian / caregiver / admin
-│       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성) · matches(간병 진행)
+│       ├── guardian/  #   홈 · patients(목록·등록) · requests(목록·작성) · matches(간병 진행) ·
+│       │              #   reviews(받은 후기·신고)
 │       ├── caregiver/ #   홈 · profile · reviews(받은 후기·신고) · availability ·
 │       │              #   requests(목록·상세·수락) · accepted(수락한 간병과 진행 상황) ·
 │       │              #   training(교육·퀴즈·수료)
@@ -122,6 +123,7 @@ Edge Function은 앱과 다른 런타임(Deno)에서 돌아가므로 `tsconfig.j
 | `/guardian` | 보호자 | 보호자 홈 |
 | `/guardian/requests/[id]` | 보호자 | 요청 상세와 추천 간병인, 진행 중인 간병 |
 | `/guardian/matches` | 보호자 | 간병 진행 상황, 노쇼 신고, 지난 간병 이력 |
+| `/guardian/reviews` | 보호자 | 간병인이 남긴 후기 목록과 신고 |
 | `/caregiver` | 간병인 | 간병인 홈 |
 | `/caregiver/profile` | 간병인 | 프로필·역량 등록과 수정, 받은 평가 요약, 수료한 교육 |
 | `/caregiver/reviews` | 간병인 | 받은 후기 목록과 신고 |
@@ -697,7 +699,7 @@ Mock 모드가 읽는 사본은 `src/api/training.demo.ts` 에 같은 식별자�
 
 | 화면 | 하는 일 |
 | --- | --- |
-| `/caregiver/reviews` | 받은 후기마다 신고 버튼. 신고한 후기에는 처리 상태가 붙는다 |
+| `/caregiver/reviews` · `/guardian/reviews` | 받은 후기마다 신고 버튼. 신고한 후기에는 처리 상태가 붙는다. 두 화면이 같은 `ReceivedReviewsView` 를 쓴다 |
 | `/admin` | 확인을 기다리는 신고와 매칭 건수 |
 | `/admin/reports` | 확인 중 · 후기 삭제됨 · 반려됨 탭. 오래 기다린 신고가 위로 |
 | `/admin/matches` | 노쇼 신고 취소, 종료일 지난 매칭 강제 종료 |
@@ -776,7 +778,6 @@ Mock 어댑터를 테스트하는 이유는 화면이 보는 규칙의 기준 �
 
 ### 남겨 둔 것
 
-- 보호자는 받은 후기를 볼 화면이 없어 신고 버튼도 없다.
 - `supabase/tests` 는 아직 실제 데이터베이스에서 돌려 보지 않았다.
 - 계정(프로필)을 지우면 그 사람이 낀 매칭이 cascade 로 함께 지워진다. 탈퇴 정책을 정할 때 함께 다룬다.
 
