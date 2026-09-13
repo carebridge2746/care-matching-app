@@ -619,6 +619,11 @@ comment on column public.caregiver_profiles.min_daily_wage is '희망 일당(원
 -- security definer 로 caregiver_profiles 의 RLS를 지나가되,
 -- 어떤 행이 나갈지는 아래 where 절이 전적으로 정한다.
 
+-- 이 파일은 이미 적용된 데이터베이스에 다시 실행할 수 있어야 한다. 이 함수는 31) 과 46) 에서
+-- 반환 컬럼이 늘어나므로, 다시 실행할 때 여기의 create or replace 가 더 넓은 기존 함수와 부딪힌다.
+-- 먼저 지우고 만든다. 뒤의 정의가 다시 지우고 최종 모양으로 만든다.
+drop function if exists public.recommendation_candidates(uuid);
+
 create or replace function public.recommendation_candidates(request_id uuid)
 returns table (
   caregiver_id uuid,
@@ -837,6 +842,10 @@ grant update (
 --
 -- 취소된 매칭은 다시 닫는다. 성사되지 않은 만남의 연락처와 특이사항을
 -- 이력이라는 이유로 계속 열어 둘 까닭이 없다. 다만 자기 자신의 자료는 언제나 보인다.
+
+-- 47) 에서 컬럼이 늘어나므로, 이미 적용된 데이터베이스에 다시 실행하면 여기의 create or replace 가
+-- "뷰의 컬럼을 줄일 수 없다"로 멈춘다. 먼저 지우고 만든다. 이 뷰에 기대는 다른 객체는 없다.
+drop view if exists public.match_details;
 
 create or replace view public.match_details
 with (security_invoker = false) as
@@ -1282,10 +1291,13 @@ begin
 
   reviewee := case when target.guardian_id = actor then target.caregiver_id else target.guardian_id end;
 
+  -- 인자 이름(match_id · rating · comment)이 reviews 의 컬럼 이름과 같다. on conflict 가 붙은
+  -- insert 안에서는 둘을 가리지 못해 "column reference is ambiguous" 로 멈추므로, 인자는 함수 이름으로
+  -- 한정하고 충돌 대상은 제약 이름으로 적는다. 인자 이름은 앱이 rpc 로 부르는 이름이라 바꾸지 않는다.
   insert into public.reviews (match_id, reviewer_id, reviewee_id, rating, comment)
-  values (match_id, actor, reviewee, rating, nullif(trim(comment), ''))
+  values (create_review.match_id, actor, reviewee, create_review.rating, nullif(trim(create_review.comment), ''))
   -- 이미 쓴 후기는 덮어쓰지 않는다. 앱은 null 을 받고 "이미 남기셨습니다"로 안내한다.
-  on conflict (match_id, reviewer_id) do nothing
+  on conflict on constraint reviews_one_per_reviewer do nothing
   returning id into review_id;
 
   return review_id;
@@ -2870,11 +2882,13 @@ begin
     raise exception '이미 지워진 후기입니다.' using errcode = '22023';
   end if;
 
+  -- 인자 이름(reason · detail)이 review_reports 의 컬럼 이름과 같다. create_review() 와 같은 이유로
+  -- 인자는 함수 이름으로 한정하고 충돌 대상은 제약 이름으로 적는다.
   insert into public.review_reports (review_id, reporter_id, reason, detail)
-  values (target.id, actor, reason, nullif(trim(detail), ''))
+  values (target.id, actor, report_review.reason, nullif(trim(report_review.detail), ''))
   -- 이미 신고한 후기는 다시 신고해도 줄이 늘지 않는다.
   -- 앱은 null 을 받고 "이미 신고하셨습니다"로 안내한다.
-  on conflict (review_id, reporter_id) do nothing
+  on conflict on constraint review_reports_one_per_reporter do nothing
   returning id into report_id;
 
   return report_id;

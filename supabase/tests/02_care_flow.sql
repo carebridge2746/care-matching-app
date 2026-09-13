@@ -565,7 +565,7 @@ end $$;
 
 -- 시작일 전에는 시작할 수 없다 (schema.sql 64) ----------------------------------
 
--- "내일 시작" 요청(R4)을 간병인 C1 이 수락한 뒤 오늘 시작해 본다.
+-- "내일 시작" 요청(R4)은 노쇼 검사 준비에서 간병인 C1 이 이미 수락해 두었다. 그 매칭을 오늘 시작해 본다.
 -- 막지 않으면 기간은 내일부터인데 기록은 오늘 시작·종료로 남아 서로 어긋난다.
 reset role;
 set local request.jwt.claims to '{"sub":"20000000-0000-4000-8000-000000000002","role":"authenticated"}';
@@ -577,10 +577,6 @@ declare
   got uuid;
   m_status text;
 begin
-  if public.accept_care_request('20000000-0000-4000-8000-000000000204') is null then
-    raise exception 'FAIL: [준비] 간병인 C1 이 내일 시작하는 요청 R4 를 수락하지 못했다';
-  end if;
-
   select x.id into target from public.matches x
   where x.request_id = '20000000-0000-4000-8000-000000000204' and x.status = 'accepted';
 
