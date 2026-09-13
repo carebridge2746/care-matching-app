@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import Head from 'expo-router/head';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -29,6 +30,10 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
+      {/* 웹 브라우저 탭에 보이는 이름. 비워 두면 주소(localhost:8081)가 대신 뜬다. */}
+      <Head>
+        <title>AI 간병 매칭</title>
+      </Head>
       <StatusBar style="dark" />
       {isBootstrapping ? (
         <LoadingView message="로그인 정보를 확인하는 중입니다" />

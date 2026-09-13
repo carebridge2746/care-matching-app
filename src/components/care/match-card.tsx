@@ -1,12 +1,13 @@
-import { StyleSheet, View } from 'react-native';
+import { useState } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import { AppButton } from '@/components/common/app-button';
 import { AppText } from '@/components/common/app-text';
 import { Card } from '@/components/common/card';
 import { StatusBadge } from '@/components/common/status-badge';
-import { formatKoreanDate, formatKoreanTimestamp, formatPeriod } from '@/lib/date';
+import { formatKoreanDate, formatKoreanTimestamp, formatPeriod, today } from '@/lib/date';
 import { canReportNoShow, isMatchOverdue } from '@/lib/no-show';
-import { Spacing } from '@/theme';
+import { Layout, Spacing } from '@/theme';
 import {
   ageFromBirthYear,
   CareTypeLabels,
@@ -43,7 +44,7 @@ export type MatchCardProps = {
    * 지워진 후기도 다시 쓸 수는 없으므로, 버튼이 없는 이유를 함께 알려 준다.
    */
   reviewDeleted?: boolean;
-  /** 값을 주면 카드 전체를 눌러 상세로 갈 수 있다 */
+  /** 값을 주면 요청 상세로 가는 링크가 보인다 */
   onPress?: () => void;
 };
 
@@ -55,6 +56,10 @@ export type MatchCardProps = {
  *
  * 간병 시작은 출근한 간병인만 누른다. 종료는 양쪽 모두 누를 수 있다 —
  * 한쪽만 누를 수 있게 하면 상대가 앱을 열지 않는 동안 간병이 계속 진행중으로 남는다.
+ *
+ * 카드 전체를 누르는 영역으로 두지 않는다. 카드 안에 시작·종료 버튼이 있어서, 카드까지
+ * 버튼이면 웹에서 버튼 안에 버튼이 들어가고(잘못된 HTML), 버튼을 누르려다 상세로 넘어가기 쉽다.
+ * 상세로 가는 길은 따로 링크로 둔다.
  */
 export function MatchCard({
   match,
@@ -69,19 +74,25 @@ export function MatchCard({
   reviewDeleted = false,
   onPress,
 }: MatchCardProps) {
+  /** 종료 확인을 펼쳤는지. 종료는 되돌릴 수 없어서 한 번 더 묻는다. */
+  const [isConfirmingComplete, setConfirmingComplete] = useState(false);
+
   const { patient, care } = match;
   const counterpart = viewer === 'guardian' ? match.caregiver : match.guardian;
   const counterpartLabel = MatchPartyLabels[viewer === 'guardian' ? 'caregiver' : 'guardian'];
 
   const isLive = isMatchLive(match.status);
-  const canStart = isLive && viewer === 'caregiver' && match.status === 'accepted';
+  const isAwaitingStart = isLive && viewer === 'caregiver' && match.status === 'accepted';
+  // 시작일 전에는 시작할 수 없다. 저장소도 같은 판정을 한다 — 여기서는 버튼을 감출 뿐이다.
+  const hasStartDateArrived = care.startDate <= today();
+  const canStart = isAwaitingStart && hasStartDateArrived;
   const canComplete = isLive && match.status === 'inProgress';
   // 시작일이 지났는데 아직 시작되지 않았다. 이것만으로 노쇼는 아니지만 확인이 필요하다.
   const isOverdue = isMatchOverdue(match);
   const canReport = Boolean(onReportNoShow) && viewer === 'guardian' && canReportNoShow(match);
 
   return (
-    <Card onPress={onPress}>
+    <Card>
       <View style={styles.header}>
         <AppText variant="subheading">
           {patient.name} · {ageFromBirthYear(patient.birthYear)}세 {GenderLabels[patient.gender]}
@@ -146,7 +157,36 @@ export function MatchCard({
         </AppText>
       ) : null}
 
-      {isLive && (canStart || canComplete || onCancel) ? (
+      {isAwaitingStart && !hasStartDateArrived ? (
+        <AppText variant="caption" tone="secondary">
+          {formatKoreanDate(care.startDate)}부터 간병 시작을 누를 수 있습니다.
+        </AppText>
+      ) : null}
+
+      {isConfirmingComplete && canComplete && onComplete ? (
+        <View style={styles.confirm}>
+          <AppText variant="body">간병을 종료할까요?</AppText>
+          <AppText variant="caption" tone="secondary">
+            종료하면 되돌릴 수 없습니다. 종료한 뒤에 후기를 남길 수 있습니다.
+          </AppText>
+          <View style={styles.actions}>
+            <AppButton
+              title="네, 종료합니다"
+              style={styles.action}
+              loading={busy}
+              disabled={busy}
+              onPress={onComplete}
+            />
+            <AppButton
+              title="아니요"
+              variant="outline"
+              style={styles.action}
+              disabled={busy}
+              onPress={() => setConfirmingComplete(false)}
+            />
+          </View>
+        </View>
+      ) : isLive && (canStart || canComplete || onCancel) ? (
         <View style={styles.actions}>
           {canStart && onStart ? (
             <AppButton
@@ -161,9 +201,8 @@ export function MatchCard({
             <AppButton
               title="간병 종료"
               style={styles.action}
-              loading={busy}
               disabled={busy}
-              onPress={onComplete}
+              onPress={() => setConfirmingComplete(true)}
             />
           ) : null}
           {onCancel ? (
@@ -182,7 +221,7 @@ export function MatchCard({
         노쇼 신고는 취소와 나란히 두지 않고 한 줄 아래에 따로 둔다.
         같은 줄에 놓으면 취소하려다 잘못 누르기 쉬운데, 신고는 되돌릴 수 없다.
       */}
-      {canReport && onReportNoShow ? (
+      {canReport && onReportNoShow && !isConfirmingComplete ? (
         <AppButton
           title="간병인이 오지 않았습니다"
           variant="outline"
@@ -205,6 +244,17 @@ export function MatchCard({
           <AppButton title="후기 남기기" variant="secondary" disabled={busy} onPress={onReview} />
         ) : null
       ) : null}
+
+      {onPress ? (
+        <Pressable
+          accessibilityRole="link"
+          onPress={onPress}
+          style={({ pressed }) => [styles.link, pressed && styles.pressed]}>
+          <AppText variant="label" tone="brand">
+            요청 자세히 보기 ›
+          </AppText>
+        </Pressable>
+      ) : null}
     </Card>
   );
 }
@@ -225,5 +275,17 @@ const styles = StyleSheet.create({
   action: {
     flex: 1,
     paddingHorizontal: Spacing.md,
+  },
+  confirm: {
+    gap: Spacing.xs,
+    paddingTop: Spacing.xs,
+  },
+  link: {
+    alignSelf: 'flex-start',
+    minHeight: Layout.minTouchHeight,
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.6,
   },
 });

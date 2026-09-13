@@ -13,6 +13,7 @@ import {
   TextField,
   type ChoiceOption,
 } from '@/components/common';
+import { describeAiFill, fillDraftFromAi } from '@/lib/ai-fill';
 import { CommonCareSkills } from '@/lib/care-options';
 import { today } from '@/lib/date';
 import {
@@ -31,6 +32,7 @@ import {
   ageFromBirthYear,
   CareTypeLabels,
   CaregiverGenderPreferenceLabels,
+  type AiCareConditions,
   type CaregiverGenderPreference,
   type CareType,
 } from '@/types';
@@ -47,12 +49,20 @@ const GenderPreferenceOptions: ChoiceOption<CaregiverGenderPreference>[] = [
   { value: 'male', label: CaregiverGenderPreferenceLabels.male },
 ];
 
+/** AI 가 정리한 원문과 그 결과. 원문이 그 뒤로 바뀌면 등록할 때 다시 정리한다. */
+type Structured = {
+  text: string;
+  conditions: AiCareConditions;
+};
+
 /**
  * 간병 요청 작성.
  *
- * 자연어 원문과 조건을 함께 받는다.
- * 원문은 Phase 4에서 AI가 조건으로 바꾸는 입력이 되고,
- * 지금 고른 조건은 사람이 직접 정한 값으로 그대로 남는다.
+ * 자연어 원문과 조건을 함께 받는다. 원문을 적고 버튼을 누르면 AI 가 읽어 낸 조건으로
+ * 비어 있는 칸을 채운다 — 원문에 "서울 강남구, 오전 9시부터"라고 적은 보호자가 같은 내용을
+ * 아래 칸에 한 번 더 적지 않게 하려는 것이다. 이미 고른 값은 덮어쓰지 않는다.
+ *
+ * 채운 뒤에도 사람이 고친 값이 기준이다. 매칭은 이 폼의 조건으로 한다.
  */
 export default function CareRequestNewScreen() {
   const router = useRouter();
@@ -62,6 +72,7 @@ export default function CareRequestNewScreen() {
   const loadPatients = usePatientsStore((state) => state.load);
 
   const create = useCareRequestsStore((state) => state.create);
+  const structure = useCareRequestsStore((state) => state.structure);
   const isSubmitting = useCareRequestsStore((state) => state.isSubmitting);
   const isStructuring = useCareRequestsStore((state) => state.isStructuring);
   const errorMessage = useCareRequestsStore((state) => state.errorMessage);
@@ -72,6 +83,8 @@ export default function CareRequestNewScreen() {
   const [careType, setCareType] = useState<CareType | null>(null);
   const [region, setRegion] = useState('');
   const [startDate, setStartDate] = useState(today());
+  /** 시작일은 오늘로 미리 채워 두므로, 보호자가 직접 고쳤는지를 따로 기억한다 */
+  const [startDateTouched, setStartDateTouched] = useState(false);
   const [endDate, setEndDate] = useState('');
   const [dailyStartTime, setDailyStartTime] = useState('');
   const [dailyEndTime, setDailyEndTime] = useState('');
@@ -79,8 +92,14 @@ export default function CareRequestNewScreen() {
   const [preferredGender, setPreferredGender] = useState<CaregiverGenderPreference>('any');
   const [budget, setBudget] = useState('');
 
+  const [structured, setStructured] = useState<Structured | null>(null);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const guardianId = user?.id;
+
+  // 환자가 한 명뿐이면 고를 필요가 없다. 여럿이면 잘못 고르지 않도록 비워 둔다.
+  const selectedPatientId = patientId ?? (patients.length === 1 ? (patients[0]?.id ?? null) : null);
+  const hasErrors = Object.values(errors).some((error) => error !== null);
 
   useEffect(() => {
     if (guardianId) {
@@ -94,13 +113,69 @@ export default function CareRequestNewScreen() {
     description: `${ageFromBirthYear(patient.birthYear)}세${patient.relationship ? ` · ${patient.relationship}` : ''}`,
   }));
 
+  const handleFill = async () => {
+    const textError = validateRequestText(requestText);
+    if (textError) {
+      setErrors((previous) => ({ ...previous, requestText: textError }));
+      return;
+    }
+
+    setAiNotice(null);
+    const conditions = await structure(requestText);
+
+    if (!conditions) {
+      setAiNotice('원문을 정리하지 못했습니다. 아래 조건을 직접 채워 주세요.');
+      return;
+    }
+
+    const { draft, filledLabels } = fillDraftFromAi(
+      {
+        careType,
+        region,
+        startDate,
+        endDate,
+        dailyStartTime,
+        dailyEndTime,
+        requiredSkills,
+        preferredGender,
+        budget,
+      },
+      conditions,
+      { startDateTouched }
+    );
+
+    setCareType(draft.careType);
+    setRegion(draft.region);
+    setStartDate(draft.startDate);
+    setEndDate(draft.endDate);
+    setDailyStartTime(draft.dailyStartTime);
+    setDailyEndTime(draft.dailyEndTime);
+    setRequiredSkills(draft.requiredSkills);
+    setPreferredGender(draft.preferredGender);
+    setBudget(draft.budget);
+
+    // 채운 칸의 오류는 지운다. 채운 값이 틀렸다면 등록할 때 다시 걸린다.
+    setErrors((previous) => ({
+      ...previous,
+      careType: null,
+      region: null,
+      startDate: null,
+      endDate: null,
+      dailyStartTime: null,
+      dailyEndTime: null,
+      budget: null,
+    }));
+    setStructured({ text: requestText, conditions });
+    setAiNotice(describeAiFill(filledLabels));
+  };
+
   const handleSubmit = async () => {
     if (!user) {
       return;
     }
 
     const nextErrors: Record<string, string | null> = {
-      patient: patientId ? null : '어느 분의 간병인지 선택해 주세요.',
+      patient: selectedPatientId ? null : '어느 분의 간병인지 선택해 주세요.',
       requestText: validateRequestText(requestText),
       careType: careType ? null : '간병 장소를 선택해 주세요.',
       region: validateRequired(region, '지역'),
@@ -113,14 +188,18 @@ export default function CareRequestNewScreen() {
 
     setErrors(nextErrors);
 
-    if (!patientId || !careType || Object.values(nextErrors).some((error) => error !== null)) {
+    if (
+      !selectedPatientId ||
+      !careType ||
+      Object.values(nextErrors).some((error) => error !== null)
+    ) {
       return;
     }
 
     const budgetValue = budget.trim() ? Number(budget.trim().replace(/,/g, '')) : undefined;
 
     const request = await create(user.id, {
-      patientId,
+      patientId: selectedPatientId,
       requestText,
       careType,
       region,
@@ -131,6 +210,10 @@ export default function CareRequestNewScreen() {
       requiredSkills,
       preferredCaregiverGender: preferredGender,
       budgetPerDay: budgetValue,
+      // 같은 원문을 이미 정리했다면 그 결과를 쓴다. 정리한 뒤 원문을 고쳤다면 저장소가 다시 정리한다.
+      ...(structured && structured.text === requestText
+        ? { aiConditions: structured.conditions }
+        : {}),
     });
 
     if (request) {
@@ -158,19 +241,27 @@ export default function CareRequestNewScreen() {
       avoidKeyboard
       edges={['bottom']}
       footer={
-        <AppButton
-          // 정리에 몇 초가 걸리므로 무엇을 기다리는지 버튼이 그대로 말해 준다
-          title={isStructuring ? '요청 내용을 정리하는 중' : '요청 등록'}
-          onPress={handleSubmit}
-          loading={isSubmitting}
-          disabled={isSubmitting}
-        />
+        <>
+          {/* 오류는 각 칸 아래에 뜨는데, 긴 폼 끝에서 등록을 누르면 화면 밖이라 보이지 않는다 */}
+          {hasErrors ? (
+            <AppText variant="caption" tone="danger" center>
+              입력이 필요한 항목이 있습니다. 위로 올려 빨간 표시를 확인해 주세요.
+            </AppText>
+          ) : null}
+          <AppButton
+            // 정리에 몇 초가 걸리므로 무엇을 기다리는지 버튼이 그대로 말해 준다
+            title={isSubmitting && isStructuring ? '요청 내용을 정리하는 중' : '요청 등록'}
+            onPress={handleSubmit}
+            loading={isSubmitting}
+            disabled={isSubmitting || isStructuring}
+          />
+        </>
       }>
       <View style={styles.section}>
         <ChoiceGroup
           label="어느 분의 간병인가요"
           options={patientOptions}
-          value={patientId}
+          value={selectedPatientId}
           onChange={(value) => {
             setPatientId(value);
             setErrors((previous) => ({ ...previous, patient: null }));
@@ -191,9 +282,23 @@ export default function CareRequestNewScreen() {
           }}
           placeholder="어머니가 고관절 수술을 받으셔서 3주 정도 병원에서 도와주실 분이 필요합니다. 혼자 일어나기 어려우시고 식사 보조가 필요합니다."
           error={errors.requestText}
-          helperText="평소 말하듯 적어 주세요. AI가 조건을 정리해 드립니다."
+          helperText="평소 말하듯 적어 주세요. 아래 버튼을 누르면 AI가 비어 있는 조건을 채워 드립니다."
           multiline
         />
+        <AppButton
+          title={isStructuring && !isSubmitting ? '적은 내용을 정리하는 중' : '적은 내용으로 아래 조건 채우기'}
+          variant="secondary"
+          loading={isStructuring && !isSubmitting}
+          disabled={isStructuring || isSubmitting}
+          onPress={() => {
+            void handleFill();
+          }}
+        />
+        {aiNotice ? (
+          <AppText variant="caption" tone="secondary">
+            {aiNotice}
+          </AppText>
+        ) : null}
       </View>
 
       <View style={styles.section}>
@@ -224,6 +329,7 @@ export default function CareRequestNewScreen() {
           value={startDate}
           onChange={(value) => {
             setStartDate(value);
+            setStartDateTouched(true);
             setErrors((previous) => ({ ...previous, startDate: null }));
           }}
           error={errors.startDate}

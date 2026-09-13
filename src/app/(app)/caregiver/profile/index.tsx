@@ -5,15 +5,16 @@ import { StyleSheet, View } from 'react-native';
 import {
   AppButton,
   AppText,
+  Card,
   ChoiceGroup,
   LoadingView,
   MultiChoiceGroup,
   Screen,
+  StarRating,
   TagField,
   TextField,
   type ChoiceOption,
 } from '@/components/common';
-import { ReviewList } from '@/components/care';
 import { CompletionList } from '@/components/training';
 import { CommonCareSkills, CommonCertifications } from '@/lib/care-options';
 import { validateAtLeastOne, validateBudget, validateYearsOfExperience } from '@/lib/validation';
@@ -22,7 +23,14 @@ import { useCaregiverProfileStore } from '@/store/use-caregiver-profile-store';
 import { useReviewsStore } from '@/store/use-reviews-store';
 import { useTrainingStore } from '@/store/use-training-store';
 import { Spacing } from '@/theme';
-import { CareTypeLabels, GenderLabels, type CaregiverProfile, type CareType, type Gender } from '@/types';
+import {
+  CareTypeLabels,
+  formatRating,
+  GenderLabels,
+  type CaregiverProfile,
+  type CareType,
+  type Gender,
+} from '@/types';
 
 const GenderOptions: ChoiceOption<Gender>[] = [
   { value: 'female', label: GenderLabels.female },
@@ -102,18 +110,14 @@ type ProfileFormProps = {
  *
  * 프로필 화면에 두는 이유는 보호자가 보는 것과 같은 값이기 때문이다 —
  * 내가 어떻게 보이는지를 프로필과 같은 자리에서 확인할 수 있어야 한다.
- * 작성자 이름은 본인에게도 성만 보인다.
  *
- * 부적절한 후기는 여기서 신고한다. 후기를 직접 지울 수 없게 둔 대신 열어 둔 창구다.
+ * 여기에는 요약만 둔다. 후기 목록과 신고는 받은 후기 화면에서 한다 — 이 화면 아래에는
+ * "프로필 저장" 버튼이 고정되어 있어, 신고 폼을 여기서 열면 그 버튼을 신고 보내기로 착각한다.
  */
 function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
+  const router = useRouter();
   const rating = useReviewsStore((state) => state.rating);
-  const received = useReviewsStore((state) => state.received);
-  const reports = useReviewsStore((state) => state.reports);
-  const reportingReviewId = useReviewsStore((state) => state.reportingReviewId);
-  const errorMessage = useReviewsStore((state) => state.errorMessage);
   const load = useReviewsStore((state) => state.load);
-  const report = useReviewsStore((state) => state.report);
 
   useEffect(() => {
     void load(caregiverId);
@@ -122,19 +126,21 @@ function ReceivedReviews({ caregiverId }: { caregiverId: string }) {
   return (
     <View style={styles.section}>
       <AppText variant="heading">받은 평가</AppText>
-      <ReviewList
-        rating={rating}
-        reviews={received}
-        reports={reports}
-        reportingReviewId={reportingReviewId}
-        onReport={(reviewId, input) => report(reviewId, caregiverId, input)}
-        emptyMessage="간병을 마치면 보호자가 남긴 후기가 여기에 쌓입니다."
-      />
-      {errorMessage ? (
-        <AppText variant="body" tone="danger">
-          {errorMessage}
+      <Card>
+        <View style={styles.rating}>
+          {/* 후기가 없을 때 빈 별 다섯 개를 그리면 0점으로 읽힌다 */}
+          {rating.reviewCount > 0 ? <StarRating value={Math.round(rating.ratingAvg ?? 0)} /> : null}
+          <AppText variant="subheading">{formatRating(rating)}</AppText>
+        </View>
+        <AppText variant="caption" tone="secondary">
+          보호자에게도 같은 평가가 보입니다. 부적절한 후기는 받은 후기 화면에서 신고할 수 있습니다.
         </AppText>
-      ) : null}
+      </Card>
+      <AppButton
+        title="받은 후기 보기"
+        variant="outline"
+        onPress={() => router.push('/caregiver/reviews')}
+      />
     </View>
   );
 }
@@ -196,6 +202,7 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
   const [introduction, setIntroduction] = useState(profile?.introduction ?? '');
 
   const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const hasErrors = Object.values(errors).some((error) => error !== null);
 
   const handleSubmit = async () => {
     const nextErrors: Record<string, string | null> = {
@@ -237,14 +244,22 @@ function ProfileForm({ caregiverId, profile }: ProfileFormProps) {
       avoidKeyboard
       edges={['bottom']}
       footer={
-        <AppButton
-          title={profile ? '프로필 저장' : '프로필 등록'}
-          onPress={() => {
-            void handleSubmit();
-          }}
-          loading={isSubmitting}
-          disabled={isSubmitting}
-        />
+        <>
+          {/* 오류는 각 칸 아래에 뜨는데, 긴 폼 끝에서 저장을 누르면 화면 밖이라 보이지 않는다 */}
+          {hasErrors ? (
+            <AppText variant="caption" tone="danger" center>
+              입력이 필요한 항목이 있습니다. 위로 올려 빨간 표시를 확인해 주세요.
+            </AppText>
+          ) : null}
+          <AppButton
+            title={profile ? '프로필 저장' : '프로필 등록'}
+            onPress={() => {
+              void handleSubmit();
+            }}
+            loading={isSubmitting}
+            disabled={isSubmitting}
+          />
+        </>
       }>
       <View style={styles.intro}>
         <AppText variant="body" tone="secondary">
@@ -367,5 +382,11 @@ const styles = StyleSheet.create({
   section: {
     paddingTop: Spacing.sm,
     gap: Spacing.lg,
+  },
+  rating: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    flexWrap: 'wrap',
   },
 });

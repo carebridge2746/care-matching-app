@@ -3376,3 +3376,53 @@ comment on function public.admin_cancel_match(uuid, text) is '관리자가 살�
 
 revoke all on function public.admin_cancel_match(uuid, text) from public, anon;
 grant execute on function public.admin_cancel_match(uuid, text) to authenticated;
+
+-- ===========================================================================
+-- Phase 12 — 전체 점검에서 나온 규칙 보완
+-- ===========================================================================
+
+-- 64) 간병은 시작일부터 시작할 수 있다 ----------------------------------------
+--
+-- 23) 의 start_care() 는 시작일을 보지 않았다. 그래서 "9월 14일부터"인 간병을 13일에 시작하고
+-- 곧바로 종료할 수 있었고, 요청의 기간과 매칭의 기록(started_at·completed_at)이 서로 어긋났다.
+-- 종료(complete_care)는 진행중인 간병만 받으므로 시작만 막으면 된다.
+--
+-- 날짜는 report_no_show() 와 같이 한국 시간으로 견준다. 조건에 맞지 않으면 23) 과 같이
+-- 예외 대신 null 을 돌려준다 — 앱은 null 을 받으면 안내하고 목록을 다시 불러온다.
+
+create or replace function public.start_care(match_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  started public.matches%rowtype;
+begin
+  update public.matches m
+     set status = 'in_progress',
+         started_at = now()
+   where m.id = match_id
+     and m.caregiver_id = actor
+     and m.status = 'accepted'
+     and exists (
+       select 1 from public.care_requests r
+       where r.id = m.request_id
+         and r.start_date <= (now() at time zone 'Asia/Seoul')::date
+     )
+  returning * into started;
+
+  if started.id is null then
+    return null;
+  end if;
+
+  update public.care_requests r
+     set status = 'in_progress'
+   where r.id = started.request_id;
+
+  return started.id;
+end;
+$$;
+
+comment on function public.start_care(uuid) is '수락한 간병을 진행중으로 바꾼다. 당사자 간병인만, accepted 상태에서만, 시작일(한국 시간)부터 된다.';

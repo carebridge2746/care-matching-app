@@ -9,7 +9,7 @@ import {
   saveCareRequests,
   saveMatches,
 } from '@/api/mock-store';
-import { today } from '@/lib/date';
+import { formatKoreanDate, today } from '@/lib/date';
 import { maskPersonName } from '@/lib/privacy';
 import {
   isMatchLive,
@@ -200,6 +200,16 @@ export const mockMatchHistoryAdapter: MatchHistoryAdapter = {
     }
     if (match.status !== 'accepted') {
       throw new ApiError('invalid_state', '이미 시작했거나 끝난 간병입니다. 목록을 새로 불러와 주세요.');
+    }
+
+    // 시작일 전에는 시작할 수 없다. 막지 않으면 "9월 14일부터"인 간병이 13일에 시작·종료되어
+    // 기간과 기록이 서로 어긋난다. Supabase 쪽에서는 start_care() 가 같은 조건을 건다.
+    const request = (await loadCareRequests()).find((item) => item.id === match.requestId);
+    if (request && request.startDate > today()) {
+      throw new ApiError(
+        'invalid_state',
+        `${formatKoreanDate(request.startDate)}부터 간병을 시작할 수 있습니다.`
+      );
     }
 
     const now = new Date().toISOString();

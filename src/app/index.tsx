@@ -10,7 +10,7 @@ import { RoleLabels, type UserRole } from '@/types';
 const RoleDescriptions: Record<UserRole, string> = {
   guardian: '간병 요청을 작성하고 추천받은 간병인과 연결됩니다.',
   caregiver: '역량과 가능 시간을 등록하고 요청을 수락합니다.',
-  admin: '사용자, 요청, 매칭 현황을 관리합니다.',
+  admin: '신고된 후기와 문제가 생긴 매칭을 확인하고 처리합니다.',
 };
 
 const Roles: UserRole[] = ['guardian', 'caregiver', 'admin'];

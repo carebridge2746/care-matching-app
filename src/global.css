@@ -7,3 +7,13 @@
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
 }
+
+/*
+ * 한국어는 글자마다 줄을 바꿀 수 있어서, 기본값이면 "드립니/다"처럼 낱말 중간에서 끊긴다.
+ * 낱말 단위로만 줄을 바꾸고, 한 낱말이 칸보다 길 때만 글자 중간에서 자른다.
+ * 텍스트 요소들이 body 에서 물려받는다.
+ */
+body {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}

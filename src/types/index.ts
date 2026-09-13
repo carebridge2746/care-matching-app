@@ -510,7 +510,8 @@ export type AiCareConditions = {
 export const AiConfidenceLabels: Record<AiConfidence, string> = {
   high: '원문에서 대부분 확인했습니다',
   medium: '일부는 짐작해서 정리했습니다',
-  low: '원문만으로는 분명하지 않아 대부분 비워 두었습니다',
+  // 채운 칸이 있어도 참인 문장으로 둔다. "대부분 비워 두었다"고 적어 두면 값이 채워진 카드와 어긋난다.
+  low: '원문에서 분명하지 않은 내용은 비워 두었습니다',
 };
 
 export const AiCarePlaceLabels: Record<AiCarePlace, string> = {

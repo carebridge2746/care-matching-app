@@ -160,9 +160,9 @@ export default function GuardianRequestDetailScreen() {
       </View>
 
       {/*
-        AI 가 정리한 조건은 폼에서 고른 값을 대신하지 않는다. 매칭에 쓰이는 것은 위 카드의
-        조건이고, 이 카드는 "원문을 이렇게 읽었습니다"를 보여 주어 보호자가 빠진 내용을
-        알아차리게 하는 자리다. 그래서 나란히 두지 않고 아래에 따로 둔다.
+        AI 가 정리한 조건은 폼에서 고른 값을 대신하지 않는다. 매칭에 쓰이는 것은 아래 '요청 내용'
+        카드의 조건이고, 이 카드는 "원문을 이렇게 읽었습니다"를 보여 주어 보호자가 빠진 내용을
+        알아차리게 하는 자리다. 그래서 두 카드를 합치지 않고 따로 둔다.
       */}
       {request.aiConditions && hasAiConditions(request.aiConditions) ? (
         <Card>
@@ -197,6 +197,12 @@ export default function GuardianRequestDetailScreen() {
             </AppText>
           ) : null}
 
+          {request.aiConditions.genderPreference !== 'any' ? (
+            <AppText variant="body" tone="secondary">
+              간병인 성별: {CaregiverGenderPreferenceLabels[request.aiConditions.genderPreference]}
+            </AppText>
+          ) : null}
+
           {aiSchedule ? (
             <AppText variant="body" tone="secondary">
               일정: {aiSchedule}
@@ -216,7 +222,7 @@ export default function GuardianRequestDetailScreen() {
           ) : null}
 
           <AppText variant="caption" tone="tertiary">
-            정리한 내용이 실제와 다르면 위 요청 조건을 기준으로 매칭됩니다.
+            정리한 내용이 실제와 다르더라도, 매칭은 아래 &apos;요청 내용&apos;의 조건으로 합니다.
           </AppText>
         </Card>
       ) : null}

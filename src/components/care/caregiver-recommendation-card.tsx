@@ -42,7 +42,10 @@ export function CaregiverRecommendationCard({
         별점을 배점에 섞으면 후기가 없는 새 간병인이 계속 아래로 밀려 첫 매칭을 잡지 못한다.
       */}
       <View style={styles.rating}>
-        <StarRating value={Math.round(caregiver.rating.ratingAvg ?? 0)} />
+        {/* 후기가 없을 때 빈 별 다섯 개를 그리면 0점으로 읽힌다. 그때는 문장만 둔다. */}
+        {caregiver.rating.reviewCount > 0 ? (
+          <StarRating value={Math.round(caregiver.rating.ratingAvg ?? 0)} />
+        ) : null}
         <AppText variant="caption" tone="secondary">
           {formatRating(caregiver.rating)}
         </AppText>

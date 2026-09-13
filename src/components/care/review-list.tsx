@@ -67,7 +67,8 @@ export function ReviewList({
     <View style={styles.container}>
       <Card>
         <View style={styles.summary}>
-          <StarRating value={Math.round(rating.ratingAvg ?? 0)} />
+          {/* 후기가 없을 때 빈 별 다섯 개를 그리면 0점으로 읽힌다. 그때는 문장만 둔다. */}
+          {rating.reviewCount > 0 ? <StarRating value={Math.round(rating.ratingAvg ?? 0)} /> : null}
           <AppText variant="subheading">{formatRating(rating)}</AppText>
         </View>
         {reviews.length === 0 ? (

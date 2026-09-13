@@ -148,9 +148,10 @@ export const supabaseMatchHistoryAdapter: MatchHistoryAdapter = {
       throw toApiError(error, '간병을 시작하지 못했습니다.');
     }
     if (!startedId) {
+      // start_care() 는 시작일 전에도 null 을 돌려준다(schema.sql 64). 둘을 가려 주지 않으므로 함께 적는다.
       throw new ApiError(
         'invalid_state',
-        '이미 시작했거나 끝난 간병입니다. 목록을 새로 불러와 주세요.'
+        '아직 시작일이 되지 않았거나, 이미 시작했거나 끝난 간병입니다. 목록을 새로 불러와 주세요.'
       );
     }
 

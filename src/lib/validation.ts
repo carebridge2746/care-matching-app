@@ -1,4 +1,5 @@
 import { isValidIsoDate, isValidTime } from '@/lib/date';
+import { particle } from '@/lib/korean';
 
 /**
  * 입력 검증 규칙.
@@ -71,7 +72,7 @@ export function validatePhone(value: string): string | null {
 
 /** 비어 있으면 안 되는 일반 입력 */
 export function validateRequired(value: string, label: string): string | null {
-  return value.trim() ? null : `${label}을(를) 입력해 주세요.`;
+  return value.trim() ? null : `${label}${particle(label, '을', '를')} 입력해 주세요.`;
 }
 
 /** 출생연도 — 숫자 4자리, 사람이 살아 있을 수 있는 범위 */
@@ -128,10 +129,10 @@ export function validateRequestText(value: string): string | null {
 export function validateDate(value: string, label: string): string | null {
   const text = value.trim();
   if (!text) {
-    return `${label}을(를) 입력해 주세요.`;
+    return `${label}${particle(label, '을', '를')} 입력해 주세요.`;
   }
   if (!isValidIsoDate(text)) {
-    return `${label}은(는) 2026-09-01 처럼 적어 주세요.`;
+    return `${label}${particle(label, '은', '는')} 2026-09-01 처럼 적어 주세요.`;
   }
   return null;
 }
@@ -158,7 +159,7 @@ export function validateTime(value: string, label: string): string | null {
     return null;
   }
   if (!isValidTime(text)) {
-    return `${label}은(는) 09:00 처럼 적어 주세요.`;
+    return `${label}${particle(label, '은', '는')} 09:00 처럼 적어 주세요.`;
   }
   return null;
 }
@@ -188,5 +189,5 @@ export function validateYearsOfExperience(value: string): string | null {
 
 /** 목록에서 최소 한 개는 골라야 하는 항목 (자격, 역량, 지역 …) */
 export function validateAtLeastOne(values: string[], label: string): string | null {
-  return values.length > 0 ? null : `${label}을(를) 하나 이상 선택해 주세요.`;
+  return values.length > 0 ? null : `${label}${particle(label, '을', '를')} 하나 이상 선택해 주세요.`;
 }

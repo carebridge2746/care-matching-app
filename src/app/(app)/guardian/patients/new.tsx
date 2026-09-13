@@ -65,13 +65,20 @@ export default function PatientNewScreen() {
   const [relationship, setRelationship] = useState('');
   const [conditions, setConditions] = useState<string[]>([]);
   const [mobility, setMobility] = useState<MobilityLevel | null>(null);
-  const [cognition, setCognition] = useState<CognitionLevel>('normal');
+  // 인지 상태도 미리 골라 두지 않는다. '문제 없음'이 기본으로 켜져 있으면
+  // 보호자가 확인하지 않고 넘어가도 그렇게 저장되고, 간병인은 틀린 정보로 요청을 고른다.
+  const [cognition, setCognition] = useState<CognitionLevel | null>(null);
   const [careNotes, setCareNotes] = useState('');
 
   const [nameError, setNameError] = useState<string | null>(null);
   const [birthYearError, setBirthYearError] = useState<string | null>(null);
   const [genderError, setGenderError] = useState<string | null>(null);
   const [mobilityError, setMobilityError] = useState<string | null>(null);
+  const [cognitionError, setCognitionError] = useState<string | null>(null);
+
+  const hasErrors = Boolean(
+    nameError || birthYearError || genderError || mobilityError || cognitionError
+  );
 
   const handleSubmit = async () => {
     if (!user) {
@@ -82,13 +89,15 @@ export default function PatientNewScreen() {
     const nextBirthYearError = validateBirthYear(birthYear);
     const nextGenderError = gender ? null : '성별을 선택해 주세요.';
     const nextMobilityError = mobility ? null : '거동 상태를 선택해 주세요.';
+    const nextCognitionError = cognition ? null : '인지 상태를 선택해 주세요.';
 
     setNameError(nextNameError);
     setBirthYearError(nextBirthYearError);
     setGenderError(nextGenderError);
     setMobilityError(nextMobilityError);
+    setCognitionError(nextCognitionError);
 
-    if (nextNameError || nextBirthYearError || !gender || !mobility) {
+    if (nextNameError || nextBirthYearError || !gender || !mobility || !cognition) {
       return;
     }
 
@@ -114,12 +123,20 @@ export default function PatientNewScreen() {
       avoidKeyboard
       edges={['bottom']}
       footer={
-        <AppButton
-          title="저장"
-          onPress={handleSubmit}
-          loading={isSubmitting}
-          disabled={isSubmitting}
-        />
+        <>
+          {/* 오류는 각 칸 아래에 뜨는데, 긴 폼 끝에서 저장을 누르면 화면 밖이라 보이지 않는다 */}
+          {hasErrors ? (
+            <AppText variant="caption" tone="danger" center>
+              입력이 필요한 항목이 있습니다. 위로 올려 빨간 표시를 확인해 주세요.
+            </AppText>
+          ) : null}
+          <AppButton
+            title="저장"
+            onPress={handleSubmit}
+            loading={isSubmitting}
+            disabled={isSubmitting}
+          />
+        </>
       }>
       <View style={styles.section}>
         <AppText variant="heading">기본 정보</AppText>
@@ -183,7 +200,11 @@ export default function PatientNewScreen() {
           label="인지 상태"
           options={CognitionOptions}
           value={cognition}
-          onChange={setCognition}
+          onChange={(value) => {
+            setCognition(value);
+            setCognitionError(null);
+          }}
+          error={cognitionError}
         />
         <MultiChoiceGroup
           label="질환 (해당하는 것 모두)"

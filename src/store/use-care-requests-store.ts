@@ -16,6 +16,12 @@ type CareRequestsState = {
   /** 지금 목록이 누구의 것인지. 다른 보호자가 로그인하면 목록을 먼저 비운다. */
   loadedGuardianId: string | null;
   load: (guardianId: string) => Promise<void>;
+  /**
+   * 원문만 먼저 정리한다. 작성 화면이 빈 칸을 채우는 데 쓴다.
+   * 실패하면 null — 화면은 직접 채워 달라고 안내하면 된다.
+   */
+  structure: (requestText: string) => Promise<AiCareConditions | null>;
+  /** input.aiConditions 가 있으면 다시 정리하지 않고 그 결과를 함께 저장한다. */
   create: (guardianId: string, input: CareRequestInput) => Promise<CareRequest | null>;
   cancel: (id: string) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
@@ -52,13 +58,21 @@ export const useCareRequestsStore = create<CareRequestsState>((set, get) => ({
     }
   },
 
+  structure: async (requestText) => {
+    set({ isStructuring: true, errorMessage: null });
+    const conditions = await structureQuietly(requestText);
+    set({ isStructuring: false });
+    return conditions;
+  },
+
   create: async (guardianId, input) => {
-    set({ isSubmitting: true, isStructuring: true, errorMessage: null });
+    set({ isSubmitting: true, isStructuring: !input.aiConditions, errorMessage: null });
 
     // 원문을 먼저 조건으로 정리하고, 그 결과를 요청과 함께 한 번에 저장한다.
     // 요청을 만든 뒤에 따로 붙이지 않는 이유는, 두 번째 단계가 실패하면
     // 조건이 비어 있는 요청이 남고 그 자리를 나중에 되돌릴 방법이 없기 때문이다.
-    const aiConditions = await structureQuietly(input.requestText);
+    // 작성 화면에서 같은 원문을 이미 정리했으면 그 결과를 쓴다 — 같은 원문을 두 번 보내지 않는다.
+    const aiConditions = input.aiConditions ?? (await structureQuietly(input.requestText));
     set({ isStructuring: false });
 
     try {
